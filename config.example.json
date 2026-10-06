@@ -1,0 +1,25 @@
+{
+  "risk_fraction": 0.03,
+  "daily_loss_fraction": 0.05,
+  "max_positions": 2,
+  "max_symbols": 20,
+  "poll_seconds": 5,
+  "cooldown_seconds": 300,
+  "max_tick_age_seconds": 15,
+  "max_spread_atr": 0.15,
+  "stop_atr": 1.5,
+  "reward_ratio": 1.5,
+  "risk_buffer": 1.15,
+  "max_margin_fraction": 0.8,
+  "deviation_points": 10,
+  "magic": 810031,
+  "symbols": [],
+  "account_login": null,
+  "broker_utc_offset_hours": null,
+  "commission_per_lot": null,
+  "terminal_path": null,
+  "state_dir": "state",
+  "log_dir": "logs",
+  "heartbeat_seconds": 60
+}
+

@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bijisatu"
+version = "0.1.0"
+description = "Risk-limited multi-symbol MT5 scalping research robot"
+requires-python = ">=3.11,<3.14"
+dependencies = ["tzdata>=2025.2"]
+
+[project.optional-dependencies]
+mt5 = ["MetaTrader5>=5.0.45,<6; sys_platform == 'win32'"]
+
+[project.scripts]
+bijisatu = "bijisatu.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["bijisatu*"]
+
