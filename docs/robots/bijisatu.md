@@ -45,6 +45,58 @@ Copy-Item config.example.json config.local.json
 
 `doctor` checks the environment only. It **does not** open MT5 or send orders.
 
+## Configuration reference
+
+In VS Code, open [config.example.json](../../config.example.json) or your local configuration and **hover over a key** to see its meaning, units, default, and caveats. Press Ctrl+Space for completion. The workspace associates both files with [config.schema.json](../../config.schema.json), which also highlights unknown keys and invalid types or ranges. The runtime still performs the authoritative checks, including cross-field and execution requirements.
+
+Keep configuration as standard JSON: do not add `//` comments, comment keys, or a `$schema` field to the runtime files. A key names a setting; its value supplies the chosen value. Missing keys use defaults. `null` means unset, `[]` is an empty list, and `0.03` is a fraction equal to 3%, not a lot size. Edit the ignored local configuration rather than the example. Changes take effect only after restarting the process.
+
+### Risk and order sizing
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `risk_fraction` | `0.03` | Maximum planned entry risk as a fraction of current equity (3%). Must not exceed the daily fraction; remaining budget can reduce it. |
+| `daily_loss_fraction` | `0.05` | Daily account-equity loss threshold (5% of the saved baseline). Stops new entries, not existing positions. |
+| `max_positions` | `2` | Maximum simultaneous positions; also limited to one per symbol and the remaining risk budget. |
+| `stop_atr` | `1.5` | Initial SL distance as a multiple of M1 ATR14. Broker rules, spread and rounding may widen it. |
+| `reward_ratio` | `1.5` | TP distance divided by actual entry-to-SL distance, before costs. Not a guaranteed return. |
+| `risk_buffer` | `1.15` | Applies a 15% cushion to estimated risk when sizing/reserving exposure; a larger value generally reduces lot size. |
+| `max_margin_fraction` | `0.8` | Rejects an order needing more than 80% of available free margin. Not an 80% loss allowance. |
+| `deviation_points` | `10` | Entry deviation allowance in broker points, also used in the risk estimate. Ten points equal one pip on five-decimal EURUSD; execution is not guaranteed at that deviation. |
+| `commission_per_lot` | `null` | Total opening plus closing commission per lot in account-currency units. Explicit `0` assumes no commission; spread/swap remain separate. An explicit nonnegative value is required for execution. |
+
+### Scanning and entry filters
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `symbols` | `[]` | Exact broker names to scan. Empty enables metadata-based discovery. A selected list makes the tested instruments explicit. |
+| `max_symbols` | `20` | Scan-list limit, also applied to explicit symbol lists. Not a number of required trades. |
+| `poll_seconds` | `5` | Sleep after each scan; processing adds to the actual interval. Not a timeframe or trade-frequency target. |
+| `cooldown_seconds` | `300` | Five-minute wait between attempts on the same symbol, including saved dry-run or failed attempts. Not a maximum holding time. |
+| `max_tick_age_seconds` | `15` | Rejects quotes older than 15 seconds. Future timestamps are rejected separately. |
+| `max_spread_atr` | `0.15` | Requires spread / M1 ATR14 to be at most 15%. This is a ratio, not a pip amount. |
+
+For example, a 0.8-pip spread with 1.6-pip ATR produces a ratio of `0.50`. A `max_spread_atr` value of `0.15` rejects that entry, even if the spread would otherwise look small. Increasing the limit admits higher relative trading costs; test changes offline rather than assuming that more entries will be more profitable.
+
+### Account and terminal
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `account_login` | `null` | Expected MT5 account number, not a password. Required for execution; keep the real number in local configuration only. |
+| `broker_utc_offset_hours` | `null` | Server offset used for daily risk resets: `0` means UTC, `2` means UTC+2. Observation falls back to UTC when unset; execution requires a value. |
+| `terminal_path` | `null` | Optional MT5 executable path to select a specific terminal. Windows backslashes must be escaped in JSON. Unset uses default terminal discovery. |
+| `magic` | `810031` | Identifier attached to this robot's orders and positions. Keep stable while positions remain open. |
+
+### State and logging
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `state_dir` | `"state"` | Durable baselines, daily halt flags and previous attempts. Do not remove or relocate it to reset limits. |
+| `log_dir` | `"logs"` | Daily JSONL base directory. Files are saved under `bijisatu/` and are not automatically deleted. |
+| `heartbeat_seconds` | `60` | Repeats unchanged status approximately once per minute, checked after scans. Does not alter trading rules. |
+
+Relative directory paths use the process working directory; the launcher sets it to the repository root. If directories are customized, update Git exclusions too. These descriptions do not change configured values, trading permissions, or risk limits. Gaps and slippage can still exceed calculated loss thresholds.
+
 ## Launcher
 
 Use [run-bijisatu.ps1](../../run-bijisatu.ps1) as the PowerShell entry point, equivalent to a small shell script on Linux. It forwards arguments to [scripts/run_bijisatu.py](../../scripts/run_bijisatu.py), which handles confirmation and execution permission. Run these commands from the repository root. The launcher always uses the project's virtual environment and resolves relative configuration paths from the project root.
