@@ -52,7 +52,7 @@ Run the offline test suite:
 
 ```
 
-Tests do not require a terminal connection and never send orders. CI runs them on Windows.
+Tests do not require a terminal connection and never send orders. CI runs them on Windows only for pull requests targeting the default branch, `main`; pushes do not trigger the workflow.
 
 ## Trading risk
 

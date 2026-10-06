@@ -199,5 +199,5 @@ Tests do not require a terminal connection and never send orders.
 .\.venv\Scripts\python.exe -m unittest discover -s tests -v
 ```
 
-CI runs offline tests on Windows. Local configuration, state, logs, market data, and reports are excluded from commits. Never store trading passwords or tokens in this repository.
+CI runs offline tests on Windows only for pull requests targeting `main`, the default branch. Pushes do not trigger the workflow. Local configuration, state, logs, market data, and reports are excluded from commits. Never store trading passwords or tokens in this repository.
 
