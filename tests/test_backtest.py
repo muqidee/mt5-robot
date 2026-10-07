@@ -185,11 +185,16 @@ class BacktestTests(unittest.TestCase):
             Bar(boundary, 110, 110, 90, 110),
             Bar(boundary + 60, 110, 124, 110, 123),
             Bar(boundary + 600, 100, 100, 100, 100),
+        ] + [
+            Bar(t, 100, 100, 100, 100)
+            for t in range(boundary + 86400 - 300, boundary + 86400, 60)
+        ] + [
             Bar(boundary + 86400, 100, 100, 100, 100),
             Bar(boundary + 86460, 100, 100, 100, 100),
         ]
         result = self.run_case(bars, atr=10, initial_equity=1000, risk_fraction=0.5,
-                               daily_loss_fraction=0.1, spread=0, broker_utc_offset_hours=2)
+                               daily_loss_fraction=0.1, spread=0, broker_utc_offset_hours=2,
+                               max_open_risk_fraction=0.5)
         self.assertEqual(result["trade_count"], 2)
         first, second = result["trades"]
         self.assertEqual(first["exit_reason"], "take_profit")
@@ -247,9 +252,23 @@ class BacktestTests(unittest.TestCase):
                            ("daily_loss_fraction", 0), ("daily_loss_fraction", 2),
                            ("volume_step", 0), ("volume_min", 101),
                            ("volume_max", 0), ("broker_utc_offset_hours", 25),
-                           ("spread", float("nan")), ("slippage", float("inf")), ("spread", True)):
+                           ("spread", float("nan")), ("slippage", float("inf")), ("spread", True),
+                           ("max_open_risk_fraction", 0), ("max_open_risk_fraction", 1),
+                           ("max_open_risk_fraction", -.1), ("max_open_risk_fraction", True),
+                           ("max_open_risk_fraction", "0.05"),
+                           ("max_open_risk_fraction", float("nan"))):
             with self.subTest(key=key, value=value), self.assertRaises(ValueError):
                 self.run_case(warmup(), **{key: value})
+
+    def test_open_risk_ceiling_caps_single_position_sizing(self):
+        bars = warmup() + [Bar(30000, 100, 100, 100, 100)]
+        result = self.run_case(bars, initial_equity=1000, risk_fraction=.2,
+                               daily_loss_fraction=.5, max_open_risk_fraction=.005,
+                               commission_per_lot=2, value_per_price_unit=10, risk_buffer=1.2)
+        trade = result["trades"][0]
+        self.assertEqual(trade["volume"], .24)
+        self.assertLessEqual(trade["volume"] * (15 + 2) * 1.2, 5)
+        self.assertEqual(result["parameters"]["max_open_risk_fraction"], .005)
 
     def test_real_strategy_flat_data_has_no_trades(self):
         with csv_file(csv_text(warmup())) as path:

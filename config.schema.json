@@ -5,6 +5,19 @@
   "type": "object",
   "additionalProperties": false,
   "properties": {
+    "strategy_mode": {
+      "type": "string",
+      "enum": ["scalping", "intraday"],
+      "default": "scalping",
+      "description": "Selects closed-candle EMA trend/pullback trading: scalping uses M1 entries and M5 trend; intraday uses M15 entries and H1 trend. ATR14 is measured on the entry timeframe. Intraday is a hypothesis to test, not a guarantee of daily profit or a same-day exit. Changing modes does not clear saved daily halts or attempts."
+    },
+    "max_open_risk_fraction": {
+      "type": "number",
+      "exclusiveMinimum": 0,
+      "exclusiveMaximum": 1,
+      "default": 0.05,
+      "description": "Combined planned open-position risk ceiling as a fraction of CURRENT equity: 0.05 = 5%. Reserves loss from current bid/ask marks to server stops plus estimated round-trip commission and risk_buffer. Each candidate is capped by the smaller of unused open-risk capacity and remaining daily budget. It does not close or modify existing positions if falling equity exceeds the ceiling, and gaps can exceed planned risk."
+    },
     "risk_fraction": {
       "type": "number",
       "exclusiveMinimum": 0,
@@ -22,8 +35,9 @@
     "max_positions": {
       "type": "integer",
       "minimum": 1,
+      "maximum": 10,
       "default": 2,
-      "description": "Maximum simultaneous open positions allowed before new entries are blocked. The robot also allows only one position per symbol. This is an upper limit, not a target; account-wide risk limits still apply. Foreign/manual positions block entries separately."
+      "description": "Maximum simultaneous open positions allowed before new entries are blocked, with an absolute cap of 10. The robot also allows only one position per symbol. This is an upper limit, not a target; account-wide risk limits still apply. Foreign/manual positions block entries separately."
     },
     "max_symbols": {
       "type": "integer",
@@ -35,7 +49,7 @@
       "type": "integer",
       "minimum": 1,
       "default": 5,
-      "description": "Seconds to sleep after each completed scan. Actual time between scans also includes processing time. This is not a trade frequency or chart timeframe; signals still use closed M1/M5 candles."
+      "description": "Seconds to sleep after each completed scan. Actual time between scans also includes processing time. This is not a trade frequency or chart timeframe; signals use the closed entry/trend candles selected by strategy_mode."
     },
     "cooldown_seconds": {
       "type": "integer",
@@ -54,13 +68,13 @@
       "exclusiveMinimum": 0,
       "exclusiveMaximum": 1,
       "default": 0.15,
-      "description": "Maximum spread divided by M1 ATR14. 0.15 means spread must be at most 15% of ATR, NOT 0.15 pips. Example: spread 0.8 pip / ATR 1.6 pips = 0.50, so a 0.15 limit rejects entry. Raising this value admits more expensive setups relative to volatility and should be tested offline first."
+      "description": "Maximum spread divided by entry-timeframe ATR14 (M1 scalping, M15 intraday). 0.15 means spread must be at most 15% of ATR, NOT 0.15 pips. Example: spread 0.8 pip / ATR 1.6 pips = 0.50, so a 0.15 limit rejects entry. Raising this value admits more expensive setups relative to volatility and should be tested offline first."
     },
     "stop_atr": {
       "type": "number",
       "exclusiveMinimum": 0,
       "default": 1.5,
-      "description": "Initial stop-loss distance multiplier applied to M1 ATR14: 1.5 means 1.5 times ATR. Spread, broker minimum stop distance and tick-size rounding can widen the actual stop. Lot sizing uses the resulting stop distance."
+      "description": "Initial stop-loss distance multiplier applied to entry-timeframe ATR14 (M1 scalping, M15 intraday): 1.5 means 1.5 times ATR. Spread, broker minimum stop distance and tick-size rounding can widen the actual stop. Lot sizing uses the resulting stop distance."
     },
     "reward_ratio": {
       "type": "number",

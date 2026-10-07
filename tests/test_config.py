@@ -23,6 +23,7 @@ class ConfigTests(unittest.TestCase):
         config = load_config(None)
         self.assertEqual(config.risk_fraction, 0.03)
         self.assertEqual(config.daily_loss_fraction, 0.05)
+        self.assertEqual(config.max_open_risk_fraction, 0.05)
         config.validate()
         with self.assertRaises(ValueError):
             config.validate(execute=True)
@@ -59,7 +60,8 @@ class ConfigTests(unittest.TestCase):
             "daily_loss_fraction": [0, 1, True, "0.05"],
             "max_spread_atr": [0, 1, True],
             "max_margin_fraction": [0, 1, True],
-            "max_positions": [0, -1, 1.5, True],
+            "max_positions": [0, -1, 1.5, True, 11],
+            "max_open_risk_fraction": [0, -1, 1, True, "0.05", None],
             "max_symbols": [0, True],
             "poll_seconds": [0, True],
             "cooldown_seconds": [0, True],
@@ -83,10 +85,17 @@ class ConfigTests(unittest.TestCase):
                 with self.subTest(field=field, value=value), self.assertRaises(ValueError):
                     replace(Config(), **{field: value}).validate()
 
+    def test_confirmed_portfolio_limits_are_valid(self):
+        config = self.load(dict(risk_fraction=.01, daily_loss_fraction=.05,
+                                max_positions=10, max_open_risk_fraction=.05))
+        config.validate()
+        self.assertEqual(config.max_positions, 10)
+        self.assertEqual(config.max_open_risk_fraction, .05)
+
     def test_nonfinite_numbers_are_rejected(self):
         for field in ("risk_fraction", "daily_loss_fraction", "stop_atr", "reward_ratio",
                       "risk_buffer", "max_spread_atr", "max_margin_fraction",
-                      "broker_utc_offset_hours", "commission_per_lot"):
+                      "broker_utc_offset_hours", "commission_per_lot", "max_open_risk_fraction"):
             for value in (float("nan"), float("inf"), -float("inf")):
                 with self.subTest(field=field, value=value), self.assertRaises(ValueError):
                     replace(Config(), **{field: value}).validate()

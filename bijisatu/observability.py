@@ -26,7 +26,8 @@ _SESSION_WINDOWS = (
 )
 _MONEY_FIELDS = {
     "equity", "balance", "daily_baseline", "daily_loss", "daily_loss_limit",
-    "reserved_open_risk", "remaining_risk", "risk_amount", "estimated_loss",
+    "reserved_open_risk", "remaining_risk", "open_risk_limit",
+    "remaining_daily_risk", "remaining_open_risk", "risk_amount", "estimated_loss",
     "worst_case_loss", "margin", "free_margin",
 }
 _ACCOUNT_FIELDS = _MONEY_FIELDS | {"currency", "open_positions"}

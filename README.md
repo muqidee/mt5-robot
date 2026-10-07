@@ -56,7 +56,7 @@ Tests do not require a terminal connection and never send orders. CI runs them o
 
 ## Trading risk
 
-No strategy guarantees profit. Validate behavior with realistic transaction costs, out-of-sample data, and demo forward testing before considering real-money execution.
+No strategy guarantees profit, including a daily profit target. BijiSatu supports selectable M15/H1 intraday and legacy M1/M5 scalping research; see its guide for rules and config-aware offline tests. Validate behavior with realistic transaction costs, out-of-sample data, and demo forward testing before considering real-money execution.
 
 Cent accounts use real money. Gaps, slippage, spread changes, commission, and swap can cause losses beyond calculated limits. Stopping a local process does not necessarily close broker positions; consult the robot's documented shutdown behavior.
 

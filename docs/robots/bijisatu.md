@@ -1,26 +1,55 @@
 # BijiSatu
 
-An experimental **Python + MetaTrader 5** scalping robot for Windows. It uses a testable, rule-based strategy with no guarantee of profit. An Exness cent account uses **real money**; it is not automatically a demo account.
+An experimental **Python + MetaTrader 5** short-term trading robot for Windows, with selectable intraday and legacy scalping modes. It uses a testable, rule-based strategy with no guarantee of profit. An Exness cent account uses **real money**; it is not automatically a demo account.
 
-## Initial release
+## Strategy modes
 
-- M5 EMA20/EMA50 trend filter, M1 EMA20 pullback/reclaim entries, and ATR14. Signals use closed candles only.
+`strategy_mode: "scalping"` preserves the original M1-entry/M5-trend default for existing configurations. `"intraday"` selects **closed M15 entries with H1 trend**. Slower candles may reduce sensitivity to minute-level noise and spread relative to ATR, but this is a hypothesis to test, not proven profitability or a guarantee of daily profit. No trade is required each day.
+
+Both modes reuse the same rules, with no extra indicators:
+
+1. Require at least 100 closed entry candles and 100 trend candles that closed no later than the entry candle's close. Intraday evaluates the latest 100 of each, matching the offline simulation; legacy live scalping retains its existing available history (up to 300), while offline uses 100.
+2. For a buy, the last three trend closes must be above EMA20, EMA20 above EMA50, and both EMAs rising on each candle. A sell mirrors these conditions.
+3. The previous entry close must be at/below its EMA20 for a buy, followed by a bullish candle closing above its own EMA20. A sell requires the opposite reclaim and a bearish candle.
+4. ATR14 uses Wilder smoothing on the entry timeframe (M15 or M1). Spread, stop distance and sizing use that ATR; signals never use an unfinished H1/M5 candle.
+5. Reject future or stale closed candles: entry close age must be within its duration plus 30 seconds, trend within its duration plus 90 seconds. Thus intraday limits are 930/3690 seconds and scalping 90/390 seconds. Quotes still have the separate 15-second default limit. Recheck entry signal and trend age before claiming an attempt; saved bar timestamps prevent duplicates and cooldown remains per symbol across restarts/mode changes.
+
+Intraday describes the entry horizon, **not a forced same-day exit**. Positions remain until server SL/TP; no end-of-day liquidation or maximum holding-time rule is implemented. Consider overnight gaps and swap in research.
+
+### Execution and risk controls
+
+- EMA20/EMA50 trend filter, EMA20 pullback/reclaim entries, and ATR14. Signals use closed candles only.
 - Initial stop loss at 1.5 × ATR, widened where required by broker limits and spread. Take profit targets 1.5 × the actual stop distance. No martingale, grid, averaging down, or trade-count targets.
 - Discovers major-currency Forex pairs and gold from broker metadata, including broker suffixes. Scans up to 20 symbols by default, with one variant per pair. Set `symbols` to restrict trading to instruments you have tested.
-- Ranks valid setups by spread/ATR, with a maximum spread of 15% of ATR. Allows up to two positions, one per symbol, with a five-minute cooldown per symbol.
+- Ranks valid setups by spread/ATR, with a maximum spread of 15% of ATR. The compatibility default permits two positions and a five-minute per-symbol cooldown; the local intraday profile permits up to ten with a fifteen-minute cooldown. One position per symbol remains enforced.
 - Sizes positions using MT5 profit/loss calculations in **account currency**, broker volume limits, remaining daily risk, estimated commission, deviation, and a 15% buffer. It does not assume cent-account lots are equivalent to USD-account lots.
 - **Observation only (`dry-run`) by default**: no orders, virtual positions, or simulated profits. Use `backtest` for offline simulation.
 - Profitability has not been validated against Exness data or broker forward tests. This is not a high-frequency trading system.
 
 ## Risk settings
 
-The requested defaults are **up to 3% of equity per entry and a 5% daily loss limit**. These are aggressive limits, not risk targets to exhaust. A risk of 0.25–0.5% per entry is more conservative for initial testing.
+The compatibility defaults remain **up to 3% of equity per entry and a 5% daily loss limit**. These are aggressive limits, not risk targets to exhaust. The example JSON intentionally retains these defaults.
+
+The ignored local configuration has been changed to a **research/test profile**, not approved live settings: `strategy_mode="intraday"`, `risk_fraction=0.01` (1% per entry), `max_open_risk_fraction=0.05` (5% of current equity combined open risk), `max_positions=10`, `daily_loss_fraction=0.05` (5% of the saved daily baseline), `cooldown_seconds=900`, `max_spread_atr=0.15`, `stop_atr=1.5`, `reward_ratio=1.5`. Other account, broker, symbol, commission and persistence settings are unchanged. No running process was restarted and no terminal connection or orders were made as part of this change. Configuration is read only at startup; a running instance still uses its old settings.
+
+Changing mode/risk must **never** delete/reset state to bypass a daily halt. The configured daily threshold is applied against the existing saved baseline on the next scan after settings are loaded; previously latched halts remain latched. Stops on existing positions are not modified. Test out-of-sample with realistic spread, adverse slippage and account-currency commission before any demo forward evaluation. Neither wider ATR stops nor reduced risk establish a profitable edge.
+
+The local **5% daily loss protection is a chosen safeguard**, not an additional user-selected portfolio target. It replaces the earlier 2% test setting so that a hidden 2% daily allocation does not defeat the requested 5% open-risk ceiling. Daily limits still take priority when losses consume the day's budget.
+
+The engine sends at most **one order per scan**, not one transaction overall or per day. Other qualifying symbols can enter on subsequent scans after exposure is refreshed; there are no simultaneous/batch sends. Up to ten positions is a hard upper bound, not a target or a count derived simply from account size. Their affordable number depends on current equity, lot minimums, stop distances, costs and existing exposure; with five full 1%-risk entries the 5% ceiling may already be exhausted. Smaller entries or reduced reserved exposure can allow more, still never exceeding ten or one per symbol.
+
+Existing open-risk reservations sum loss from current bid/ask marks to server stops, estimated round-trip commission and the configured buffer. Candidate sizing also includes allowed adverse deviation. On both the initial scan and pre-entry refresh, the candidate budget is the smaller of:
+
+- `max(0, saved_daily_baseline * daily_loss_fraction - current_daily_equity_loss - reserved_open_risk)`;
+- `max(0, current_equity * max_open_risk_fraction - reserved_open_risk)`.
+
+Entry sizing is additionally capped by `current_equity * risk_fraction`. If equity falls and existing risk exceeds the open-risk ceiling, new entries stop; existing positions/stops are not resized, widened or closed. This is a planned-risk gate, not a guaranteed realized-loss bound. Status reports expose the open-risk limit, remaining daily/open capacities and their effective minimum.
 
 Daily loss measures the decline in **total account equity** from the broker-day baseline, including realized and floating PnL. Additional risk from open positions is reserved before sizing another entry. New entries are reduced or skipped when the remaining budget is insufficient; minimum lot sizes are never forced.
 
 Once the limit is reached, the halt is saved and **no new entries are allowed until the next day**, even if equity recovers or the process restarts. Existing positions are **not forcibly closed** and retain their server-side SL/TP. This release does not trail or move stops.
 
-**Gaps, slippage, widening spreads, commission, swap, and open positions can push actual losses beyond 5%.** A stop loss does not guarantee an execution price. Calculated risk is not an absolute loss cap.
+**Gaps, slippage, widening spreads, commission, swap, and open positions can push actual losses beyond the configured daily threshold.** A stop loss does not guarantee an execution price. Calculated risk is not an absolute loss cap.
 
 ### Broker day and persistent state
 
@@ -57,8 +86,9 @@ Keep configuration as standard JSON: do not add `//` comments, comment keys, or 
 | --- | --- | --- |
 | `risk_fraction` | `0.03` | Maximum planned entry risk as a fraction of current equity (3%). Must not exceed the daily fraction; remaining budget can reduce it. |
 | `daily_loss_fraction` | `0.05` | Daily account-equity loss threshold (5% of the saved baseline). Stops new entries, not existing positions. |
-| `max_positions` | `2` | Maximum simultaneous positions; also limited to one per symbol and the remaining risk budget. |
-| `stop_atr` | `1.5` | Initial SL distance as a multiple of M1 ATR14. Broker rules, spread and rounding may widen it. |
+| `max_open_risk_fraction` | `0.05` | Combined buffered risk to stops plus commission capped at 5% of current equity, independently of daily loss protection. Unused capacity caps each candidate. |
+| `max_positions` | `2` | Maximum simultaneous positions, an integer from 1 to the absolute cap of 10; also limited to one per symbol and remaining daily/open-risk capacity. |
+| `stop_atr` | `1.5` | Initial SL distance as a multiple of entry-timeframe ATR14 (M1 scalping, M15 intraday). Broker rules, spread and rounding may widen it. |
 | `reward_ratio` | `1.5` | TP distance divided by actual entry-to-SL distance, before costs. Not a guaranteed return. |
 | `risk_buffer` | `1.15` | Applies a 15% cushion to estimated risk when sizing/reserving exposure; a larger value generally reduces lot size. |
 | `max_margin_fraction` | `0.8` | Rejects an order needing more than 80% of available free margin. Not an 80% loss allowance. |
@@ -69,12 +99,13 @@ Keep configuration as standard JSON: do not add `//` comments, comment keys, or 
 
 | Key | Default | Meaning |
 | --- | --- | --- |
+| `strategy_mode` | `"scalping"` | `scalping`: M1 entry/M5 trend; `intraday`: M15 entry/H1 trend. No guaranteed daily profit or same-day exit. |
 | `symbols` | `[]` | Exact broker names to scan. Empty enables metadata-based discovery. A selected list makes the tested instruments explicit. |
 | `max_symbols` | `20` | Scan-list limit, also applied to explicit symbol lists. Not a number of required trades. |
 | `poll_seconds` | `5` | Sleep after each scan; processing adds to the actual interval. Not a timeframe or trade-frequency target. |
 | `cooldown_seconds` | `300` | Five-minute wait between attempts on the same symbol, including saved dry-run or failed attempts. Not a maximum holding time. |
 | `max_tick_age_seconds` | `15` | Rejects quotes older than 15 seconds. Future timestamps are rejected separately. |
-| `max_spread_atr` | `0.15` | Requires spread / M1 ATR14 to be at most 15%. This is a ratio, not a pip amount. |
+| `max_spread_atr` | `0.15` | Requires spread / entry-timeframe ATR14 to be at most 15%. This is a ratio, not a pip amount. |
 
 For example, a 0.8-pip spread with 1.6-pip ATR produces a ratio of `0.50`. A `max_spread_atr` value of `0.15` rejects that entry, even if the spread would otherwise look small. Increasing the limit admits higher relative trading costs; test changes offline rather than assuming that more entries will be more profitable.
 
@@ -126,7 +157,7 @@ Press Ctrl+C to stop. Existing broker positions are not automatically closed. Do
 1. Install the broker's MT5 terminal and sign in to the intended account there. Keep passwords in the terminal, never in the robot's source or configuration.
 2. Copy [config.example.json](../../config.example.json) to `config.local.json`, which Git ignores. Set `account_login`, the broker timezone, and actual trading costs. Set `terminal_path` when multiple terminals are installed.
 3. `symbols: []` enables automatic discovery. To restrict instruments, use the broker's **exact** symbol names, including the appropriate cent-account suffix where applicable. Suffixes vary between accounts.
-4. Keep MT5 open and connected, with sufficient M1/M5 history available. You do not need to open a chart for every symbol: the robot selects configured symbols in Market Watch and requests M1/M5 data through the terminal API. The strategy needs at least 100 closed candles per timeframe; the runtime requests 300. A newly selected symbol may need time to synchronize quotes and history. If history remains missing, open that symbol's M1/M5 charts temporarily to load it. The active chart timeframe does not control the robot.
+4. Keep MT5 open and connected, with sufficient history for the selected timeframes (M15/H1 intraday, M1/M5 scalping). You do not need to open a chart for every symbol: the robot selects configured symbols in Market Watch and requests those timeframes through the terminal API. The strategy needs at least 100 closed candles per timeframe; the runtime requests 300. A newly selected symbol may need time to synchronize quotes and history. If history remains missing, open that symbol's selected timeframe charts to load it. The active chart timeframe does not control the robot.
 
 ```powershell
 .\.venv\Scripts\python.exe -m bijisatu run --config config.local.json --once
@@ -221,7 +252,7 @@ Press Ctrl+C to stop the robot. Removing the environment variable in another she
 
 ## Offline CSV backtesting
 
-Provide **M1 bid OHLC** candles with the CSV header `time,open,high,low,close`. Use UNIX seconds in UTC or ISO8601 timestamps with an explicit timezone. Timestamps must fall on minute boundaries, be unique, and increase strictly. M5 candles are built only from five complete, consecutive M1 candles. Market data is not downloaded automatically.
+Provide **M1 bid OHLC** candles with the CSV header `time,open,high,low,close`. Use UNIX seconds in UTC or ISO8601 timestamps with an explicit timezone. Timestamps must fall on minute boundaries, be unique, and increase strictly. The selected entry/trend candles are built only from complete, contiguous, UTC-boundary-aligned M1 groups (1/5 minutes scalping, 15/60 minutes intraday). Missing minutes invalidate their group, and incomplete higher-timeframe candles do not count toward warmup. Intraday needs at least 100 complete H1 candles (6,000 contiguous M1 rows when aligned), not merely 100 M1 rows. Market data is not downloaded automatically.
 
 Example data format, not a dataset for evaluating profitability:
 
@@ -238,9 +269,18 @@ The following parameters are **illustrative**, not Exness account specifications
 ```
 
 - Spread and slippage are expressed in **price units**, not points or pips. `value-per-price-unit` is account-currency PnL for a 1.0 price move on one lot.
-- Signals use closed candles, with entry at the next candle's open. If both SL and TP are touched in the same candle, the simulator assumes SL first. Stop gaps fill at the worse price.
+Use `--config config.local.json` to test the chosen local strategy and risk profile:
+
+```powershell
+.\.venv\Scripts\python.exe -m bijisatu backtest .\data\EURUSD-M1.csv --config config.local.json --equity 10000 --spread 0.00010 --slippage 0.00002 --value-per-price-unit 100000
+
+```
+
+`--config` supplies `strategy_mode`, `stop_atr`, `reward_ratio`, `max_spread_atr`, `cooldown_seconds`, `risk_fraction`, `daily_loss_fraction`, `max_open_risk_fraction`, `risk_buffer`, configured commission and broker UTC offset. Explicit CLI flags override those settings (`--strategy-mode`, `--stop-atr`, `--reward-ratio`, `--max-spread-atr`, `--cooldown-seconds`, `--risk-buffer`, `--risk`, `--daily-loss`, `--max-open-risk`, `--commission-per-lot`, `--broker-utc-offset`). Commission must be configured or supplied explicitly. Spread, slippage and contract conversion remain explicit simulation assumptions, not downloaded broker data. Without config, legacy backtest defaults remain scalping with 1.5 ATR stop, 1.5 reward, 0.15 spread cap, 300-second cooldown and an unbuffered sizing estimate (`risk_buffer=1`). The JSON report records resolved parameters.
+
+- Signals use selected closed entry/trend candles, with entry at the next observed M1 open only while both signal and trend remain fresh. Large gaps discard pending entries; no missing fills are invented. The configured cooldown applies between successful entries (live also claims dry-run/rejected/uncertain attempts). If both SL and TP are touched in the same M1 candle, the simulator assumes SL first. Stop gaps fill at the worse price.
 - The final open position is liquidated for reporting and marked as a forced exit. JSON output includes trades, statistics, and assumptions.
-- This is a single-symbol simulator, not a multi-pair portfolio backtest. It assumes constant spread, slippage, and contract-value conversion. It does not model tick-by-tick execution, liquidity, partial fills, news calendars, actual latency, swap, or broker margin. Results are **not identical** to MT5 runtime behavior and do not establish live profitability.
+- This is a single-symbol, one-position simulator, not a multi-pair portfolio backtest. `max_open_risk_fraction` still caps each entry against current equity, but other-symbol reservations and a ten-position portfolio are not simulated. It assumes constant spread, slippage, and contract-value conversion. It does not model tick-by-tick execution, liquidity, partial fills, news calendars, actual latency, swap, or broker margin. Results are **not identical** to MT5 runtime behavior and do not establish live profitability.
 - Evaluate profit after costs, drawdown, profit factor, sample size, stability across market periods, and out-of-sample performance. Trade count or win rate alone is insufficient.
 
 ## Tests

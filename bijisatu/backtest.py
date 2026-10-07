@@ -65,12 +65,28 @@ def _load_bars(path: Path) -> list[Bar]:
     return bars
 
 
+def _aggregate_closed(minutes: list[Bar], duration: int) -> Bar | None:
+    """Aggregate only boundary-aligned, complete contiguous minute groups."""
+    if len(minutes) < duration or (minutes[-1].time + 60) % (duration * 60):
+        return None
+    group = minutes[-duration:]
+    if any(bar.time != group[0].time + index * 60 for index, bar in enumerate(group)):
+        return None
+    return Bar(group[0].time, group[0].open, max(bar.high for bar in group),
+               min(bar.low for bar in group), group[-1].close,
+               sum(bar.tick_volume for bar in group))
+
+
 def run_backtest(
     path: Path, *, initial_equity: float = 10000, risk_fraction: float = 0.03,
     daily_loss_fraction: float = 0.05, spread: float, commission_per_lot: float,
     value_per_price_unit: float, volume_min: float = 0.01,
     volume_max: float = 100.0, volume_step: float = 0.01,
     broker_utc_offset_hours: float = 0.0, slippage: float = 0.0,
+    strategy_mode: str = "scalping", stop_atr: float = 1.5,
+    reward_ratio: float = 1.5, max_spread_atr: float = 0.15,
+    cooldown_seconds: int = 300, risk_buffer: float = 1.0,
+    max_open_risk_fraction: float = 0.05,
 ) -> dict:
     """Return JSON-safe summary, parameters, assumptions, trades and daily records.
 
@@ -84,6 +100,9 @@ def run_backtest(
         commission_per_lot=commission_per_lot, value_per_price_unit=value_per_price_unit,
         volume_min=volume_min, volume_max=volume_max, volume_step=volume_step,
         broker_utc_offset_hours=broker_utc_offset_hours, slippage=slippage,
+        stop_atr=stop_atr, reward_ratio=reward_ratio, max_spread_atr=max_spread_atr,
+        cooldown_seconds=cooldown_seconds, risk_buffer=risk_buffer,
+        max_open_risk_fraction=max_open_risk_fraction,
     )
     if not all(_finite(value) for value in parameters.values()):
         raise ValueError("All backtest parameters must be finite numbers")
@@ -93,6 +112,14 @@ def run_backtest(
             or abs(broker_utc_offset_hours) > 24):
         raise ValueError("Invalid equity, risk, costs, volume limits or UTC offset")
 
+    entry_minutes, trend_minutes = strategy.timeframes(strategy_mode)
+    if (stop_atr <= 0 or reward_ratio <= 0 or not 0 < max_spread_atr < 1
+            or type(cooldown_seconds) is not int or cooldown_seconds <= 0 or risk_buffer < 1
+            or not 0 < max_open_risk_fraction < 1):
+        raise ValueError("Invalid stop, reward, spread, cooldown or risk buffer")
+    parameters.update(strategy_mode=strategy_mode, entry_minutes=entry_minutes,
+                      trend_minutes=trend_minutes)
+
     bars = _load_bars(path)
     balance = float(initial_equity)
     equity = balance
@@ -101,8 +128,9 @@ def run_backtest(
     position = None
     pending = None
     last_entry = None
-    m1: list[Bar] = []
-    m5: list[Bar] = []
+    minutes: list[Bar] = []
+    entry_bars: list[Bar] = []
+    trend_bars: list[Bar] = []
     trades = []
     days = []
     day = None
@@ -155,14 +183,19 @@ def run_backtest(
         observe(mark(bar.open))
 
         if pending is not None and position is None and not day["limit_reached"] and balance > 0:
-            if last_entry is None or bar.time - last_entry >= 300:
+            signal_close = pending.bar_time + entry_minutes * 60
+            if (0 <= bar.time - signal_close <= entry_minutes * 60 + 30
+                    and trend_bars and strategy.fresh_candle(trend_bars[-1], trend_minutes, bar.time, 90)
+                    and (last_entry is None or bar.time - last_entry >= cooldown_seconds)):
                 direction = 1 if pending.side == "buy" else -1
                 entry = bar.open + (spread if direction == 1 else 0) + direction * slippage
-                distance = max(1.5 * pending.atr, spread + slippage)
+                distance = max(stop_atr * pending.atr, spread + slippage)
                 stop = entry - direction * distance
-                target = entry + direction * distance * 1.5
-                loss_per_lot = (distance + slippage) * value_per_price_unit + commission_per_lot
-                remaining = equity - day["starting_equity"] * (1 - daily_loss_fraction)
+                target = entry + direction * distance * reward_ratio
+                loss_per_lot = ((distance + slippage) * value_per_price_unit + commission_per_lot) * risk_buffer
+                daily_remaining = equity - day["starting_equity"] * (1 - daily_loss_fraction)
+                # This simulator is flat before an entry, so existing reserved risk is zero.
+                remaining = min(daily_remaining, equity * max_open_risk_fraction)
                 volume = risk.size_volume(
                     equity=equity, risk_fraction=risk_fraction, remaining_budget=remaining,
                     loss_per_lot=loss_per_lot, volume_min=volume_min,
@@ -199,20 +232,27 @@ def run_backtest(
                     close(target - direction * slippage, bar.time + 60, "take_profit")
         observe(mark(bar.close))
 
-        m1.append(bar)
-        m1 = m1[-100:]
-        if bar.time % 300 == 240 and len(m1) >= 5:
-            group = m1[-5:]
-            if all(item.time == bar.time - 240 + index * 60 for index, item in enumerate(group)):
-                m5.append(Bar(group[0].time, group[0].open, max(item.high for item in group),
-                              min(item.low for item in group), group[-1].close,
-                              sum(item.tick_volume for item in group)))
-                m5 = m5[-100:]
-        if position is None and not day["limit_reached"] and len(m1) == len(m5) == 100:
-            signal = strategy.evaluate(list(m1), list(m5))
+        minutes.append(bar)
+        minutes = minutes[-trend_minutes:]
+        entry_bar = _aggregate_closed(minutes, entry_minutes)
+        trend_bar = _aggregate_closed(minutes, trend_minutes)
+        if entry_bar is not None:
+            entry_bars.append(entry_bar)
+            entry_bars = entry_bars[-100:]
+        if trend_bar is not None:
+            trend_bars.append(trend_bar)
+            trend_bars = trend_bars[-100:]
+        if (entry_bar is not None and position is None and not day["limit_reached"]
+                and len(entry_bars) == len(trend_bars) == 100
+                and strategy.fresh_candle(trend_bars[-1], trend_minutes, bar.time + 60, 90)):
+            if strategy_mode == "scalping":
+                signal = strategy.evaluate(list(entry_bars), list(trend_bars))
+            else:
+                signal = strategy.evaluate(list(entry_bars), list(trend_bars),
+                                           entry_minutes=entry_minutes, trend_minutes=trend_minutes)
             if (isinstance(signal, Signal) and signal.side in ("buy", "sell")
-                    and signal.bar_time == bar.time and _finite(signal.atr)
-                    and signal.atr > 0 and spread / signal.atr <= 0.15):
+                    and signal.bar_time == entry_bar.time and _finite(signal.atr)
+                    and signal.atr > 0 and spread / signal.atr <= max_spread_atr):
                 pending = signal
 
     if position is not None:
@@ -233,11 +273,11 @@ def run_backtest(
         assumptions=[
             "Educational offline single-symbol simulation; no profitability claims or live execution guarantee.",
             "CSV times are UTC bar opens; OHLC are positive bid prices. Ask = bid + constant spread.",
-            "Only complete, boundary-aligned contiguous M1 groups form M5 bars. Evaluate latest 100 closed bars of each timeframe.",
-            "Signals enter at the next observed M1 open, even after missing minutes; no fills are invented in gaps. One position; 300-second entry-to-entry cooldown.",
-            "Entry requires spread/ATR <= 0.15. SL distance = max(1.5*ATR, spread+slippage); TP distance = 1.5*SL distance. No broker tick-grid/stops metadata is modeled.",
+            f"Only complete, boundary-aligned contiguous M1 groups form M{entry_minutes}/M{trend_minutes} bars. Evaluate latest 100 closed bars of each timeframe.",
+            f"Signals enter at the next observed M1 open if still fresh; gaps never invent fills. One position; {cooldown_seconds}-second entry-to-entry cooldown. Entry/trend close-age limits are timeframe duration plus 30/90 seconds, as in live scans.",
+            f"Entry requires spread/entry ATR <= {max_spread_atr}. SL distance = max({stop_atr}*ATR, spread+slippage); TP distance = {reward_ratio}*SL distance. No broker tick-grid/stops metadata is modeled.",
             "Adverse slippage applies at entry and every exit. Roundtrip commission is charged once on exit and reserved in floating equity and lot sizing.",
-            "Volume is floored by risk.size_volume using stop loss plus exit slippage and commission, capped by remaining daily loss budget; spread is embedded in execution prices.",
+            f"Volume is floored by risk.size_volume using stop loss plus exit slippage and commission, multiplied by risk_buffer={risk_buffer}, capped by remaining daily loss budget and max_open_risk_fraction={max_open_risk_fraction} of current equity; spread is embedded in execution prices. Only one position is simulated, so no other-symbol exposure is reserved.",
             "Opening gaps are processed before candle extremes. Stop gaps fill at the adverse opening quote plus slippage; favorable TP gaps receive no price improvement. Otherwise simultaneous SL/TP touches select SL.",
             "Intrabar adverse excursion is assumed first, bounded by a triggered stop. Daily limits and drawdown use realized plus conservative liquidation-valued floating equity; favorable intrabar peaks are not sampled.",
             "Fixed broker UTC offset defines days (no DST). New-day baseline is previous observed close equity, including overnight opening gap losses. A breached daily limit latches: no new entries that day; existing positions retain SL/TP.",

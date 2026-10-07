@@ -20,6 +20,8 @@
   "terminal_path": null,
   "state_dir": "state",
   "log_dir": "logs",
-  "heartbeat_seconds": 60
+  "heartbeat_seconds": 60,
+  "strategy_mode": "scalping",
+  "max_open_risk_fraction": 0.05
 }
 

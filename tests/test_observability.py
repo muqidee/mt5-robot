@@ -165,6 +165,8 @@ class LoggingTests(unittest.TestCase):
                 "daily_baseline": 12500.56789, "daily_loss": 154.88898,
                 "daily_loss_limit": 625.0283945, "open_positions": 2,
                 "reserved_open_risk": 100.123456, "remaining_risk": 370.0159585,
+                "open_risk_limit": 617.2839455, "remaining_open_risk": 517.1604895,
+                "remaining_daily_risk": 370.0159585,
             },
             "plan": {"symbol": "EURUSD", "entry": 1.123456789, "sl": 1.120000123,
                      "tp": 1.130987654, "risk_amount": 123.456789, "risk_fraction": 0.0123456789},
@@ -182,6 +184,8 @@ class LoggingTests(unittest.TestCase):
                     "Daily baseline: 12,500.57 USD", "Daily loss: 154.89 USD",
                     "Daily loss limit: 625.03 USD", "Open positions: 2",
                     "Reserved open risk: 100.12 USD", "Remaining risk: 370.02 USD",
+                    "Open risk limit: 617.28 USD", "Remaining open risk: 517.16 USD",
+                    "Remaining daily risk: 370.02 USD",
                     "Entry: 1.123456789", "SL: 1.120000123", "TP: 1.130987654",
                     "Risk amount: 123.46 USD", "Risk fraction: 0.0123456789",
                 ):

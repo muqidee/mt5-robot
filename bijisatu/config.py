@@ -3,6 +3,8 @@ import math
 from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 
+from .strategy import timeframes
+
 
 @dataclass(frozen=True)
 class Config:
@@ -28,12 +30,15 @@ class Config:
     state_dir: str = "state"
     log_dir: str = "logs"
     heartbeat_seconds: int = 60
+    strategy_mode: str = "scalping"
+    max_open_risk_fraction: float = 0.05
 
     def validate(self, execute: bool = False) -> None:
+        timeframes(self.strategy_mode)
         for name, value in asdict(self).items():
             if isinstance(value, float) and not math.isfinite(value):
                 raise ValueError(f"{name} must be finite")
-        for name in ("risk_fraction", "daily_loss_fraction", "max_spread_atr", "max_margin_fraction"):
+        for name in ("risk_fraction", "daily_loss_fraction", "max_spread_atr", "max_margin_fraction", "max_open_risk_fraction"):
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, (int, float)) or not 0 < value < 1:
                 raise ValueError(f"{name} must be between 0 and 1")
@@ -41,6 +46,8 @@ class Config:
             value = getattr(self, name)
             if type(value) is not int or value <= 0:
                 raise ValueError(f"{name} must be a positive integer")
+        if self.max_positions > 10:
+            raise ValueError("max_positions cannot exceed the absolute cap of 10")
         if type(self.deviation_points) is not int or self.deviation_points < 0:
             raise ValueError("deviation_points must be a nonnegative integer")
         for name in ("stop_atr", "reward_ratio", "risk_buffer"):

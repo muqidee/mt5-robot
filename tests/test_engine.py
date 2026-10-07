@@ -414,6 +414,148 @@ class EngineTests(unittest.TestCase):
         self.broker.send.assert_not_called()
 
 
+    def test_open_risk_capacity_tracks_current_equity_not_saved_baseline(self):
+        config = replace(self.config, risk_fraction=.01, daily_loss_fraction=.5,
+                         max_positions=10, max_open_risk_fraction=.05)
+        for equity in (5000, 10000, 20000):
+            with self.subTest(equity=equity):
+                self.broker.account.return_value = replace(self.account, equity=equity)
+                store = StateStore(self.directory / f"equity-{equity}.json")
+                store.start_day(trading_day(self.now, 0)[0], 4000, self.now - 600)
+                engine = self.engine(config=config, store=store)
+                reserved = equity * .049
+                with patch.object(engine, "_open_risk", return_value=reserved):
+                    result = engine.step(self.now)
+                self.assertEqual(result["status"], "dry_run")
+                self.assertEqual(result["account"]["open_risk_limit"], equity * .05)
+                self.assertAlmostEqual(result["account"]["remaining_open_risk"], equity * .001)
+                self.assertLessEqual(result["plan"]["risk_amount"], equity * .001 + 1e-8)
+                self.assertGreater(result["plan"]["risk_amount"], 0)
+                self.assertEqual(store.data["baseline"], 4000)
+        self.broker.send.assert_not_called()
+
+    def test_combined_open_risk_includes_costs_and_buffer(self):
+        self.baseline()
+        config = replace(self.config, risk_fraction=.01, daily_loss_fraction=.2,
+                         max_positions=10, commission_per_lot=5)
+        self.broker.positions.return_value = [
+            self.position(ticket=index, symbol=f"HELD{index}") for index in range(4)
+        ]
+        result = self.engine(config=config).step(self.now)
+        self.assertEqual(result["status"], "dry_run")
+        self.assertAlmostEqual(result["account"]["reserved_open_risk"], 483)
+        self.assertAlmostEqual(result["account"]["remaining_open_risk"], 17)
+        self.assertLessEqual(result["plan"]["risk_amount"] + 483, 500 + 1e-8)
+        self.assertLessEqual(result["plan"]["risk_amount"], 100)
+
+    def test_open_risk_ceiling_blocks_without_halt_or_position_changes(self):
+        self.baseline()
+        config = replace(self.config, max_positions=10, daily_loss_fraction=.2)
+        positions = [self.position(sl=1.09)]
+        self.broker.positions.return_value = positions
+        result = self.engine(config=config).step(self.now)
+        self.assertEqual(result["status"], "blocked")
+        self.assertEqual(result["account"]["remaining_open_risk"], 0)
+        self.assertGreater(result["account"]["remaining_daily_risk"], 0)
+        self.assertFalse(self.store.data["halted"])
+        self.assertEqual(self.broker.positions.return_value, positions)
+        self.assertEqual(self.store.data["attempts"], {})
+        self.broker.bars.assert_not_called()
+        self.broker.send.assert_not_called()
+        self.broker.close.assert_not_called()
+
+    def test_positive_open_capacity_below_minimum_lot_never_forces_entry(self):
+        self.baseline()
+        config = replace(self.config, risk_fraction=.01, max_positions=10,
+                         daily_loss_fraction=.2)
+        engine = self.engine(config=config)
+        with patch.object(engine, "_open_risk", return_value=498):
+            result = engine.step(self.now)
+        self.assertEqual(result["status"], "waiting")
+        self.assertEqual(result["account"]["remaining_risk"], 2)
+        self.assertEqual(result["skipped"], {"insufficient_risk_for_minimum_lot": 1})
+        self.assertEqual(self.store.data["attempts"], {})
+        self.broker.send.assert_not_called()
+
+    def test_equity_drop_revalidates_open_risk_before_entry(self):
+        self.baseline()
+        config = replace(self.config, risk_fraction=.01, max_positions=10,
+                         daily_loss_fraction=.2)
+        self.broker.account.side_effect = [self.account, replace(self.account, equity=9000)]
+        engine = self.engine(config=config)
+        with patch.object(engine, "_open_risk", return_value=460):
+            result = engine.step(self.now)
+        self.assertEqual(result["status"], "blocked")
+        self.assertEqual(result["account"]["open_risk_limit"], 450)
+        self.assertEqual(result["account"]["remaining_risk"], 0)
+        self.assertGreater(result["account"]["remaining_daily_risk"], 0)
+        self.assertEqual(self.store.data["attempts"], {})
+        self.assertFalse(self.store.data["halted"])
+        self.broker.send.assert_not_called()
+
+    def test_exposure_and_equity_refresh_resize_to_new_open_capacity(self):
+        self.baseline()
+        config = replace(self.config, risk_fraction=.01, max_positions=10,
+                         daily_loss_fraction=.2)
+        self.broker.account.side_effect = [self.account, replace(self.account, equity=10500)]
+        before = [self.position(ticket=index, symbol=f"HELD{index}") for index in range(3)]
+        after = before + [self.position(ticket=4, symbol="NEWHELD")]
+        self.broker.positions.side_effect = [before, after]
+        result = self.engine(config=config).step(self.now)
+        self.assertEqual(result["status"], "dry_run")
+        self.assertEqual(result["account"]["open_risk_limit"], 525)
+        self.assertAlmostEqual(result["account"]["reserved_open_risk"], 460)
+        self.assertAlmostEqual(result["account"]["remaining_risk"], 65)
+        self.assertLessEqual(result["plan"]["risk_amount"], 65 + 1e-8)
+        self.assertGreater(result["plan"]["risk_amount"], 60)
+        self.assertEqual(self.store.data["baseline"], 10000)
+
+    def test_daily_budget_is_independently_tighter_than_open_risk_capacity(self):
+        self.baseline()
+        config = replace(self.config, risk_fraction=.01, max_positions=10,
+                         daily_loss_fraction=.02, max_open_risk_fraction=.05)
+        self.broker.account.return_value = replace(self.account, equity=9820)
+        result = self.engine(config=config).step(self.now)
+        self.assertEqual(result["status"], "dry_run")
+        self.assertEqual(result["account"]["remaining_daily_risk"], 20)
+        self.assertEqual(result["account"]["remaining_open_risk"], 491)
+        self.assertLessEqual(result["plan"]["risk_amount"], 20)
+
+    def test_ten_position_hard_cap_blocks_and_nine_can_enter(self):
+        self.baseline()
+        config = replace(self.config, risk_fraction=.01, max_positions=10)
+        held = [self.position(ticket=index, symbol=f"HELD{index}", volume=.01)
+                for index in range(10)]
+        self.broker.positions.return_value = held
+        self.assertEqual(self.engine(config=config).step(self.now)["status"], "blocked")
+        self.broker.positions.return_value = held[:-1]
+        self.assertEqual(self.engine(config=config).step(self.now)["status"], "dry_run")
+        self.broker.send.assert_not_called()
+
+    def test_tenth_position_opened_during_scan_blocks_another_entry(self):
+        self.baseline()
+        config = replace(self.config, risk_fraction=.01, max_positions=10)
+        held = [self.position(ticket=index, symbol=f"HELD{index}", volume=.01)
+                for index in range(10)]
+        self.broker.positions.side_effect = [held[:-1], held]
+        self.assertEqual(self.engine(config=config).step(self.now)["status"], "blocked")
+        self.assertEqual(self.store.data["attempts"], {})
+        self.broker.send.assert_not_called()
+
+    def test_other_qualifying_symbols_can_enter_on_subsequent_scans(self):
+        self.baseline()
+        config = replace(self.config, risk_fraction=.01, max_positions=10)
+        self.broker.symbols.return_value = ["EURUSD", "GBPUSD"]
+        first = self.engine(execute=True, config=config).step(self.now)
+        self.assertEqual(first["status"], "sent")
+        self.assertEqual(self.broker.send.call_count, 1)
+        self.broker.positions.return_value = [self.position(symbol=first["plan"]["symbol"], volume=.1)]
+        second = self.engine(execute=True, config=config).step(self.now)
+        self.assertEqual(second["status"], "sent")
+        self.assertNotEqual(second["plan"]["symbol"], first["plan"]["symbol"])
+        self.assertEqual(self.broker.send.call_count, 2)
+
+
 if __name__ == "__main__":
     unittest.main()
 

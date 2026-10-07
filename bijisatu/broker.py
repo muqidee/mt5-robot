@@ -114,7 +114,10 @@ class MT5Broker:
         return Tick(raw.bid, raw.ask, raw.time)
 
     def bars(self, symbol: str, minutes: int) -> list[Bar]:
-        timeframe = self.mt5.TIMEFRAME_M1 if minutes == 1 else self.mt5.TIMEFRAME_M5
+        names = {1: "TIMEFRAME_M1", 5: "TIMEFRAME_M5", 15: "TIMEFRAME_M15", 60: "TIMEFRAME_H1"}
+        if type(minutes) is not int or minutes not in names:
+            raise ValueError("Unsupported candle timeframe")
+        timeframe = getattr(self.mt5, names[minutes])
         rows = self.mt5.copy_rates_from_pos(symbol, timeframe, 1, 300)
         if rows is None:
             raise BrokerError(f"Cannot load M{minutes} bars: {symbol}")

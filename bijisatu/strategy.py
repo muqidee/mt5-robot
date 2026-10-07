@@ -1,4 +1,4 @@
-"""Closed-bar EMA pullback entries; callers supply completed M1 candles only."""
+"""Closed-bar EMA pullback entries; callers supply completed entry candles only."""
 
 import math
 from numbers import Real
@@ -63,28 +63,47 @@ def _atr(bars: list[Bar], period: int = 14) -> float:
     return value
 
 
-def evaluate(m1: list[Bar], m5: list[Bar]) -> Signal | None:
-    """Return a signal on the latest closed M1 candle, or None.
+def timeframes(strategy_mode: str) -> tuple[int, int]:
+    """Return entry and trend durations in minutes for a supported mode."""
+    if strategy_mode == "scalping":
+        return 1, 5
+    if strategy_mode == "intraday":
+        return 15, 60
+    raise ValueError("strategy_mode must be scalping or intraday")
 
-    Bar times denote opening times. M5 candles closing after the latest M1
-    close are excluded, including from the 100-candle warmup. No wall clock
-    is consulted: the caller must exclude the still-forming M1 candle.
 
-    Trend requires three consecutive M5 closes above/below EMA20, with
-    EMA20 above/below EMA50 and both EMAs rising/falling on each candle.
-    Entry requires the previous M1 close at/beyond EMA20 against the trend,
-    followed by a directional candle closing back across its own EMA20.
-    ATR14 uses Wilder smoothing, seeded by the first 14 true ranges (the
-    first candle's range substitutes for its unavailable previous close).
-    Invalid data fail closed. Timestamp order is checked before filtering;
-    OHLC/volume values of excluded future M5 candles are not used.
+def fresh_candle(bar: Bar, minutes: int, now: float, grace_seconds: int) -> bool:
+    """Allow at most one timeframe plus feed/scan grace since candle close."""
+    return 0 <= now - (bar.time + minutes * 60) <= minutes * 60 + grace_seconds
+
+
+def evaluate(
+    m1: list[Bar], m5: list[Bar], *, entry_minutes: int = 1, trend_minutes: int = 5,
+) -> Signal | None:
+    """Return a signal on the latest closed entry candle, or None.
+
+    The legacy argument names remain compatible with M1/M5 callers. Bar times
+    denote opens. Trend candles closing after the latest entry close are
+    excluded, including from the 100-candle warmup. No wall clock is consulted:
+    callers must exclude still-forming entry candles and reject stale feeds.
+
+    Trend requires three consecutive closes above/below EMA20, EMA20 above/
+    below EMA50, and both EMAs rising/falling on each candle. Entry requires
+    the previous close at/beyond EMA20 against the trend, followed by a
+    directional candle closing back across its own EMA20. ATR14 uses Wilder
+    smoothing seeded by 14 true ranges (first candle uses its own range).
+    Invalid data fail closed; excluded future trend OHLC/volume is not used.
     """
+    if (type(entry_minutes) is not int or type(trend_minutes) is not int
+            or entry_minutes <= 0 or trend_minutes <= entry_minutes
+            or trend_minutes % entry_minutes):
+        raise ValueError("Timeframes must be positive integer minutes with trend a larger entry multiple")
     if len(m1) < 100 or len(m5) < 100:
         return None
     if not _ordered(m1) or not _ordered(m5):
         return None
-    cutoff = m1[-1].time + 60
-    closed_m5 = [bar for bar in m5 if bar.time + 300 <= cutoff]
+    cutoff = m1[-1].time + entry_minutes * 60
+    closed_m5 = [bar for bar in m5 if bar.time + trend_minutes * 60 <= cutoff]
     if len(closed_m5) < 100 or not _valid(m1) or not _valid(closed_m5):
         return None
 
@@ -108,11 +127,12 @@ def evaluate(m1: list[Bar], m5: list[Bar]) -> Signal | None:
         reclaimed = direction * (current.close - entry_ema[-1]) > 0
         directional_candle = direction * (current.close - current.open) > 0
         if trending and pulled_back and reclaimed and directional_candle:
+            trend_label = "H1" if trend_minutes == 60 else f"M{trend_minutes}"
             return Signal(
                 side=side,
                 bar_time=current.time,
                 atr=atr,
-                reason=f"M5 EMA20/50 {side} trend; M1 EMA20 pullback/reclaim",
+                reason=f"{trend_label} EMA20/50 {side} trend; M{entry_minutes} EMA20 pullback/reclaim",
             )
     return None
 
