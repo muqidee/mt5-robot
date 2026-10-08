@@ -1,0 +1,38 @@
+services:
+  ollama:
+    container_name: ollama
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: mt5-robot-ollama:local
+    ports:
+      - "127.0.0.1:11435:11434"
+    volumes:
+      - ollama-models:/root/.ollama
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 5s
+      start_period: 30s
+      retries: 5
+
+  ollama-model-init:
+    container_name: ollama-model-init
+    image: mt5-robot-ollama:local
+    pull_policy: never
+    depends_on:
+      ollama:
+        condition: service_healthy
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+      OLLAMA_MODEL: "${OLLAMA_MODEL:-qwen3:4b}"
+    entrypoint: ["/bin/sh"]
+    command:
+      - -ec
+      - 'ollama show "$$OLLAMA_MODEL" > /dev/null 2>&1 || ollama pull "$$OLLAMA_MODEL"'
+    restart: "no"
+
+volumes:
+  ollama-models:
+
