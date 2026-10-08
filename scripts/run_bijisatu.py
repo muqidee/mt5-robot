@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(description="Start BijiSatu in observation mode by default.")
-    result.add_argument("--execute", action="store_true", help="Enable order submission after typing TRADE to confirm")
+    result.add_argument("--execute", action="store_true", help="Enable order submission after selecting option 1 to confirm")
     result.add_argument("--once", action="store_true", help="Run one scan instead of continuous monitoring")
     result.add_argument("--verbose", action="store_true", help="Show detailed symbol diagnostics in the terminal")
     result.add_argument("--config", type=Path, help="Configuration path; relative paths are resolved from the project root")
@@ -46,8 +46,10 @@ def main(argv=None) -> int:
         if args.execute:
             print("Order execution may use REAL MONEY. Risk settings remain those in your configuration.")
             print("Stopping this process does not close existing broker positions; server-side SL/TP remain active.")
-            answer = input("Type TRADE to enable order submission, or anything else to cancel: ")
-            if answer.strip() != "TRADE":
+            print("1. Enable order submission")
+            print("2. Cancel (default)")
+            answer = input("Select an option [1/2, default 2]: ")
+            if answer.strip() != "1":
                 print("Cancelled. No robot process started.")
                 return 0
             environment["BIJISATU_ALLOW_ORDERS"] = "YES"

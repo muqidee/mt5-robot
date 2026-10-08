@@ -45,8 +45,8 @@ class LauncherTests(unittest.TestCase):
         self.assertEqual(self.runner.call_args.kwargs["cwd"], self.root)
         self.assertFalse(self.runner.call_args.kwargs["check"])
 
-    def test_live_requires_typed_confirmation_and_only_changes_child_environment(self):
-        with patch.dict(os.environ, {"BIJISATU_ALLOW_ORDERS": "NO"}), patch("builtins.input", return_value="TRADE"):
+    def test_live_requires_numbered_confirmation_and_only_changes_child_environment(self):
+        with patch.dict(os.environ, {"BIJISATU_ALLOW_ORDERS": "NO"}), patch("builtins.input", return_value="1"):
             self.assertEqual(run_bijisatu.main(["--execute", "--once", "--verbose"]), 0)
             self.assertEqual(os.environ["BIJISATU_ALLOW_ORDERS"], "NO")
         command = self.runner.call_args.args[0]
@@ -54,8 +54,21 @@ class LauncherTests(unittest.TestCase):
             self.assertIn(flag, command)
         self.assertEqual(self.runner.call_args.kwargs["env"]["BIJISATU_ALLOW_ORDERS"], "YES")
 
+    def test_numbered_menu_is_displayed_and_accepts_surrounding_whitespace(self):
+        with patch("builtins.input", return_value=" 1 ") as prompt:
+            self.assertEqual(run_bijisatu.main(["--execute"]), 0)
+        self.assertIn("1. Enable order submission", self.stdout.getvalue())
+        self.assertIn("2. Cancel (default)", self.stdout.getvalue())
+        prompt.assert_called_once_with("Select an option [1/2, default 2]: ")
+        self.runner.assert_called_once()
+
+    def test_interrupted_confirmation_never_starts_child(self):
+        with patch("builtins.input", side_effect=KeyboardInterrupt):
+            self.assertEqual(run_bijisatu.main(["--execute"]), 130)
+        self.runner.assert_not_called()
+
     def test_cancelled_confirmation_never_starts_child(self):
-        for answer in ("", "yes", "trade", "NO"):
+        for answer in ("", "2", "0", "3", "yes", "trade", "TRADE", "NO"):
             with self.subTest(answer=answer), patch("builtins.input", return_value=answer):
                 self.assertEqual(run_bijisatu.main(["--execute"]), 0)
                 self.runner.assert_not_called()
