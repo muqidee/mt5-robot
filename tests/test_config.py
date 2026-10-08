@@ -28,6 +28,14 @@ class ConfigTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             config.validate(execute=True)
 
+    def test_future_tick_tolerance_defaults_and_supported_range(self):
+        self.assertEqual(load_config(None).max_tick_future_seconds, 1.0)
+        for value in (0, 0.312, 1):
+            with self.subTest(value=value):
+                config = self.load({"max_tick_future_seconds": value})
+                config.validate()
+                self.assertEqual(config.max_tick_future_seconds, value)
+
     def test_execution_requires_all_three_explicit_settings(self):
         settings = dict(account_login=123, broker_utc_offset_hours=0, commission_per_lot=0)
         Config(**settings).validate(execute=True)
@@ -66,6 +74,7 @@ class ConfigTests(unittest.TestCase):
             "poll_seconds": [0, True],
             "cooldown_seconds": [0, True],
             "max_tick_age_seconds": [0, True],
+            "max_tick_future_seconds": [-0.001, 1.001, True, "1", None],
             "magic": [0, True],
             "deviation_points": [-1, 0.5, True],
             "stop_atr": [0, -1, True],
@@ -95,7 +104,8 @@ class ConfigTests(unittest.TestCase):
     def test_nonfinite_numbers_are_rejected(self):
         for field in ("risk_fraction", "daily_loss_fraction", "stop_atr", "reward_ratio",
                       "risk_buffer", "max_spread_atr", "max_margin_fraction",
-                      "broker_utc_offset_hours", "commission_per_lot", "max_open_risk_fraction"):
+                      "broker_utc_offset_hours", "commission_per_lot", "max_open_risk_fraction",
+                      "max_tick_future_seconds"):
             for value in (float("nan"), float("inf"), -float("inf")):
                 with self.subTest(field=field, value=value), self.assertRaises(ValueError):
                     replace(Config(), **{field: value}).validate()

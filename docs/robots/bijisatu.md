@@ -26,6 +26,64 @@ Intraday describes the entry horizon, **not a forced same-day exit**. Positions 
 - **Observation only (`dry-run`) by default**: no orders, virtual positions, or simulated profits. Use `backtest` for offline simulation.
 - Profitability has not been validated against Exness data or broker forward tests. This is not a high-frequency trading system.
 
+## Optional Ollama entry filter
+
+The entry filter is **disabled by default** and must be explicitly selected separately from existing observation. It never authorizes execution by itself: `--execute`, the environment lock, account configuration and all broker/risk guards remain required. Use these mutually exclusive flags in the existing configuration:
+
+```json
+{
+  "ollama_filter_enabled": true,
+  "ollama_observation_enabled": false
+}
+```
+
+Do not enable the filter in a running trading setup until offline mocked filter tests **and a synthetic, real structured response through the exact production client** pass. A healthy service or installed model alone is insufficient. Current CPU Qwen validation timed out at 30 seconds; local observation remains unchanged and filter activation is blocked. No MT5 connection, order, model download or live restart is part of this validation.
+
+A valid strategy setup **AND** an exact Qwen `allow` are required. Qwen is veto-only: it cannot invent trades, change lot size, SL/TP, risk limits or execution settings. `skip`, pending, timeout, malformed response, service failure, full queue, absent client or expired verdict means **no new order**. Filter mode applies equally to dry-run plans and execution, but dry-run still never sends orders.
+
+The engine never waits for inference. One bounded worker queues market-only snapshots, and later scans look up results. Requests are deduplicated per symbol/bar, including failed/saturated requests, without recording an order attempt. The approval binds symbol, side, bar, strategy mode/timeframes, model, endpoint and the exact canonical snapshot (including spread and bounded closed candles). Changed snapshots cannot reuse it. Approval expires **30 seconds from enqueue**, not from response completion; candle-age checks may invalidate it sooner. Result memory is capped by `max_symbols`, with one latest record per symbol; obsolete queued work cannot approve a new bar. A slow CPU can therefore prevent all entries rather than silently bypass the filter.
+
+After lookup, the engine refreshes equity, positions, daily/open budgets and quotes. Before real execution, broker preflight (including margin and `order_check`) must pass; the engine then revalidates cash flow, day, signal/approval age, current exposure/budget and quote before the durable claim immediately preceding `order_send`. Uncertain acknowledgements still halt and cannot be retried using an approval. Pending/unavailable results do not halt or reset the daily baseline. Server-side SL/TP management remains unchanged.
+
+Shared `ollama_observation_endpoint`, `ollama_observation_model`, `ollama_observation_timeout_seconds` and `ollama_observation_queue_capacity` configure either selected mode; their old names preserve compatibility. Both flags cannot be true. Endpoint restrictions, strict response schema, bounded request/response size, no proxies/redirects and bounded shutdown join remain enforced. Only market data is sent; no account identity, equity, credentials or lots. Filter reasons are sanitized structured fields; raw responses/exceptions are never logged.
+
+Startup reports mode `off`, `observe` or `filter`. Filter events are `ollama_filter_started`, `ollama_filter_queued`, `ollama_filter_pending`, `ollama_filter_allowed`, `ollama_filter_rejected` and `ollama_filter_unavailable`. Missing startup client remains fail-closed, including when constructing `Engine` directly. Filter accuracy/profit benefits are **unproven**. Offline CSV strategy backtests **do not simulate Qwen or test this filter**; they cannot demonstrate filter performance.
+
+## Optional Ollama observation only
+
+Ollama commentary is **disabled by default** and independent of `--execute`. Opting in does not authorize orders or change dry-run behavior. Qwen judgements never filter a signal, alter exposure/risk, write order claims, or send/modify orders. Existing pre-entry exposure and freshness checks remain authoritative. Profit benefits are **unproven**; no live performance improvement is claimed.
+
+The ignored `config.local.json` opts in with these settings only; existing account, symbols and risk settings are preserved:
+
+```json
+{
+  "ollama_observation_enabled": true,
+  "ollama_observation_endpoint": "http://127.0.0.1:11435",
+  "ollama_observation_model": "qwen3:4b",
+  "ollama_observation_timeout_seconds": 10.0,
+  "ollama_observation_queue_capacity": 4
+}
+
+```
+
+The example/schema defaults use the same values except `ollama_observation_enabled: false`. Settings load only at startup; no process or terminal was started/restarted for this integration. The endpoint must be an HTTP origin using `localhost` or a literal loopback address (including `[::1]`), optional valid port, and no credentials, API path, query or fragment. `localhost` connects directly to `127.0.0.1`; no DNS, environment proxies or redirects are used. The model must already be installed; the client does not download it.
+
+One background worker posts `/api/chat` with `stream: false`, `think: false`, a JSON response schema, temperature 0, fixed seed and a modest fixed preset (`num_predict: 64`, `num_ctx: 2048`). Qwen versions must support these options; unsupported requests only produce an observation error. Each request contains symbol, side, entry-bar open timestamp, timeframe minutes, ATR, price spread, verified EMA trend/pullback context, and at most six closed OHLC candles per timeframe. Trend candles close no later than the entry cutoff. No account identifiers, credentials, equity, lot sizing, repository files, configuration or persistent state are sent. No tools or execution authority are provided.
+
+The configured queue holds at most four pending snapshots by default plus one in flight. Submission never waits for inference: queue saturation, timeouts, service outages, malformed replies and model `skip` decisions do not suppress valid orders or modify their plans. A process-local per-symbol bar watermark prevents repeated requests for the same or older signal, including failed/saturated observations; it is not a durable trading claim and resets on restart. Symbol tracking is capped at 1,024 without eviction; excess symbols only log unavailable. Signals are observed during scanning before spread/entry sizing, so a judgement does not imply an order was placed or even eligible. Account-wide blocks and cooldowns may prevent a symbol from reaching evaluation.
+
+Structured events in the existing daily logs:
+
+- `ollama_observation_started`: explicitly observation only, never an execution filter; account startup details also report enabled/active status.
+- `ollama_observation_queued`: symbol, side and bar timestamp scheduled once.
+- `ollama_observation_result`: `decision` (`allow`/`skip`), printable reason of at most 160 characters, and request latency. These are untrusted commentary, **not execution decisions**.
+- `ollama_observation_error`: snapshot/scheduling/response rejected, with a fixed reason code, not raw response/exception text.
+- `ollama_observation_unavailable`: connection failure, timeout, queue/symbol capacity, startup failure or shutdown cancellation. No retries for that bar.
+
+Response bodies are capped at 8 KiB, headers/transport reads are bounded, and judgement keys/types/enums are strictly checked; duplicate keys, nonfinite numbers, tool calls and control characters are rejected. Shutdown cancels pending snapshots, waits at most the request deadline plus 0.2 seconds for the single worker, and disables its logging before logging handlers close. It never waits for the whole queue. A one-cycle run may cancel pending observations rather than report every queued result.
+
+CPU inference and model warmup can exceed the default 10-second total request deadline (allowed 0.1–30 seconds). An independent local synthetic `/api/chat` check with `qwen3:4b`, thinking/streaming disabled, temperature 0, `num_predict: 96` and `num_ctx: 2048` timed out after 90.05 seconds; the data were entirely invented, with no market/account data. A second warm-model request with only a minimal invented JSON instruction, `think: false`, `num_predict: 48` and `num_ctx: 2048` also timed out at 30 seconds. `/api/ps` reported `qwen3:4b` loaded with Q4_K_M quantization, context 2048 and `size_vram: 0` (CPU); `/api/version` remained responsive and reported version `0.40.0`. These checks establish service reachability and model loading only: **no usable model judgement has been verified**. Automated integration tests use mocked HTTP/inference, not successful live generation. Repeated expensive synthetic generation calls were not pursued. The smaller 64-token preset is a bound, not a verified speed improvement; truncated/malformed replies are rejected. The observation timeout is not increased to accommodate this measurement. Queue saturation and timeouts are expected with observation enabled; scanning and order calculations never wait for inference, and logs can arrive after scanning or an order event. This observation path does not establish an entry-time performance benefit, trading accuracy or profitability.
+
 ## Risk settings
 
 The compatibility defaults remain **up to 3% of equity per entry and a 5% daily loss limit**. These are aggressive limits, not risk targets to exhaust. The example JSON intentionally retains these defaults.
@@ -104,7 +162,8 @@ Keep configuration as standard JSON: do not add `//` comments, comment keys, or 
 | `max_symbols` | `20` | Scan-list limit, also applied to explicit symbol lists. Not a number of required trades. |
 | `poll_seconds` | `5` | Sleep after each scan; processing adds to the actual interval. Not a timeframe or trade-frequency target. |
 | `cooldown_seconds` | `300` | Five-minute wait between attempts on the same symbol, including saved dry-run or failed attempts. Not a maximum holding time. |
-| `max_tick_age_seconds` | `15` | Rejects quotes older than 15 seconds. Future timestamps are rejected separately. |
+| `max_tick_age_seconds` | `15` | Rejects quotes older than 15 seconds; unaffected by the future-tick tolerance. |
+| `max_tick_future_seconds` | `1.0` | Accepts quotes up to one second ahead of the local UTC clock to tolerate small clock differences. Allowed range is 0–1; use 0 for strict rejection. Larger leads are rejected; closed-candle validation is unchanged. |
 | `max_spread_atr` | `0.15` | Requires spread / entry-timeframe ATR14 to be at most 15%. This is a ratio, not a pip amount. |
 
 For example, a 0.8-pip spread with 1.6-pip ATR produces a ratio of `0.50`. A `max_spread_atr` value of `0.15` rejects that entry, even if the spread would otherwise look small. Increasing the limit admits higher relative trading costs; test changes offline rather than assuming that more entries will be more profitable.
@@ -125,6 +184,12 @@ For example, a 0.8-pip spread with 1.6-pip ATR produces a ratio of `0.50`. A `ma
 | `state_dir` | `"state"` | Durable baselines, daily halt flags and previous attempts. Do not remove or relocate it to reset limits. |
 | `log_dir` | `"logs"` | Daily JSONL base directory. Files are saved under `bijisatu/` and are not automatically deleted. |
 | `heartbeat_seconds` | `60` | Repeats unchanged status approximately once per minute, checked after scans. Does not alter trading rules. |
+| `ollama_filter_enabled` | `false` | Opt in to fail-closed strategy AND exact fresh Qwen approval. Mutually exclusive with observation; never grants execute permission. Validate synthetic production responses before activation. |
+| `ollama_observation_enabled` | `false` | Opt in to local asynchronous commentary only. Never filters entries or authorizes orders; independent of execute/dry-run. Cannot be true with filter enabled. |
+| `ollama_observation_endpoint` | `"http://127.0.0.1:11435"` | Loopback HTTP origin only; no credentials, path, query, fragment, DNS, proxies or redirects. `/api/chat` is appended internally. |
+| `ollama_observation_model` | `"qwen3:4b"` | Installed local model; 1–128 characters matching letters/digits then letters/digits/dot/underscore/colon/slash/hyphen. No automatic download. |
+| `ollama_observation_timeout_seconds` | `10.0` | Shared total request deadline, 0.1–30 seconds. CPU latency may exceed it: observation only logs failures; filter blocks entries. Filter approval expires 30 seconds from enqueue. |
+| `ollama_observation_queue_capacity` | `4` | Pending snapshot cap, integer 1–32, plus one active request. Full queues log unavailable without blocking or retrying that signal. |
 
 Relative directory paths use the process working directory; the launcher sets it to the repository root. If directories are customized, update Git exclusions too. These descriptions do not change configured values, trading permissions, or risk limits. Gaps and slippage can still exceed calculated loss thresholds.
 
@@ -139,7 +204,7 @@ Continuous observation, with no orders:
 
 ```
 
-Order execution, requiring you to type `TRADE` at the confirmation prompt:
+Order execution, requiring you to select `1` at the numbered confirmation prompt (`2`, Enter, or any other input cancels):
 
 ```powershell
 .\run-bijisatu.ps1 --execute --verbose
@@ -172,7 +237,9 @@ Without `--execute`, no orders are sent. Use `--verbose` to inspect skipped symb
 
 The terminal uses readable headings and labelled details, not JSON. Every header includes UTC time, the execution mode, and all currently active session labels. Status reports show equity, balance, daily loss, remaining risk, open positions, and skipped-entry reasons. A heartbeat is printed every 60 seconds even when the status has not changed.
 
-Use `--verbose` to show per-symbol diagnostics in the terminal, including bid/ask, spread in points, tick age and its limit, candle counts and ages, signal candidates, cooldowns, and rejected entries. Stale quotes and future timestamps have separate explanations. A missing trend/pullback setup is not a connection error.
+Use `--verbose` to show per-symbol diagnostics in the terminal, including bid/ask, spread in points, tick age and its limits, candle counts and ages, signal candidates, cooldowns, and rejected entries. Stale quotes and future timestamps have separate explanations. A missing trend/pullback setup is not a connection error.
+
+A small quote timestamp lead (for example 0.312 seconds) is accepted within `max_tick_future_seconds`, defaulting to one second. This applies when scanning, refreshing an entry, and reserving risk for existing positions. Larger leads and stale quotes are still rejected. If a timestamp fails while reserving open-position risk or refreshing an entry, the scan returns `blocked` with a `quote_time_blocked` warning and retries after `poll_seconds`; it does not use that quote, submit an order, claim an attempt, or reset the daily baseline. The process keeps running and recalculates exposure when valid data return. Other broker failures, invalid prices, missing stops, and uncertain order results retain their existing safeguards. Keep Windows time synchronized; this tolerance does not correct clock drift or relax the 15-second stale-quote limit. UK daylight-saving display time (BST, UTC+1) does not change UTC timestamp comparisons. If Windows Time is stopped, an administrator can start the service with `Start-Service W32Time`, request `w32tm /resync`, and inspect `w32tm /query /status`. Changes require a process restart; existing broker positions and saved daily state must not be reset.
 
 Example terminal output:
 

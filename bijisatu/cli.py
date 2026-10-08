@@ -13,6 +13,7 @@ from .broker import BrokerError, MT5Broker
 from .config import load_config
 from .engine import Engine
 from .observability import configured_logging
+from .ollama import OllamaEntryFilter, OllamaObserver
 from .state import StateError, StateStore, exclusive_lock
 
 
@@ -86,14 +87,14 @@ def _observe(engine, config, log, once: bool) -> int:
         time.sleep(config.poll_seconds)
 
 
-def _run_connected(broker, config, args, log, mode: str) -> int:
+def _run_connected(broker, config, args, log, mode: str, observer=None, entry_filter=None) -> int:
     broker.connect()
     account = broker.account()
     identity = hashlib.sha256(f"{account.login}:{account.server}:{account.currency}".encode()).hexdigest()[:24]
     root = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "BijiSatu" / "locks"
     with exclusive_lock(root / f"{identity}.lock"):
         store = StateStore(Path(config.state_dir) / f"{identity}-{mode}.json")
-        engine = Engine(broker, config, store, args.execute)
+        engine = Engine(broker, config, store, args.execute, observer=observer, entry_filter=entry_filter)
         log.warning("Trading account connected", extra={"event": "account_connected", "details": {
             "account_type": "DEMO" if account.is_demo else "REAL MONEY", "currency": account.currency,
             "equity": account.equity, "risk_percent": config.risk_fraction * 100,
@@ -104,6 +105,12 @@ def _run_connected(broker, config, args, log, mode: str) -> int:
             "strategy_mode": config.strategy_mode, "entry_minutes": engine.entry_minutes,
             "trend_minutes": engine.trend_minutes,
             "heartbeat_seconds": config.heartbeat_seconds,
+            "ollama_observation_enabled": config.ollama_observation_enabled,
+            "ollama_observation_active": observer is not None,
+            "ollama_execution_filter": config.ollama_filter_enabled,
+            "ollama_filter_active": entry_filter is not None,
+            "ollama_mode": "filter" if config.ollama_filter_enabled else (
+                "observe" if config.ollama_observation_enabled else "off"),
         }})
         if not args.execute:
             log.warning("Observation only: no orders, virtual positions or simulated profits; use backtest for offline simulation",
@@ -126,12 +133,46 @@ def run(args) -> int:
     with configured_logging(Path(config.log_dir), verbose=args.verbose, mode=mode,
                             broker_utc_offset_hours=config.broker_utc_offset_hours) as log:
         broker = MT5Broker(config)
+        observer = None
+        entry_filter = None
         try:
+            if config.ollama_filter_enabled:
+                try:
+                    entry_filter = OllamaEntryFilter(config)
+                except Exception:
+                    log.warning("Ollama entry filter unavailable; all new entries blocked", extra={
+                        "event": "ollama_filter_unavailable", "details": {"reason": "startup_failed"},
+                    })
+                log.warning("Ollama entry filter enabled: strategy AND exact fresh approval required", extra={
+                    "event": "ollama_filter_started", "details": {
+                        "active": entry_filter is not None, "execution_filter": True,
+                        "model": config.ollama_observation_model, "max_approval_age_seconds": 30,
+                    },
+                })
+            elif not config.ollama_observation_enabled:
+                log.info("Ollama disabled; strategy and broker risk controls only", extra={
+                    "event": "ollama_off", "details": {"execution_filter": False},
+                })
+            if config.ollama_observation_enabled:
+                try:
+                    observer = OllamaObserver(config)
+                except Exception:
+                    log.info("Ollama observation unavailable; trading rules unchanged", extra={
+                        "event": "ollama_observation_unavailable", "details": {
+                            "observation_only": True, "reason": "startup_failed",
+                        },
+                    })
+                log.info("Ollama observation enabled, not an execution filter", extra={
+                    "event": "ollama_observation_started", "details": {
+                        "observation_only": True, "active": observer is not None,
+                        "model": config.ollama_observation_model,
+                    },
+                })
             log.info("Daily logging enabled", extra={"event": "logging_started", "details": {
                 "directory": str(Path(config.log_dir) / "bijisatu"), "rotation_timezone": "UTC",
                 "automatic_deletion": False, "file_level": "DEBUG",
             }})
-            return _run_connected(broker, config, args, log, mode)
+            return _run_connected(broker, config, args, log, mode, observer=observer, entry_filter=entry_filter)
         except KeyboardInterrupt:
             log.info("Stopped by user; existing broker positions are NOT closed and server SL/TP remain active",
                      extra={"event": "shutdown", "details": {"reason": "keyboard_interrupt"}})
@@ -142,6 +183,10 @@ def run(args) -> int:
             })
             raise
         finally:
+            if entry_filter is not None:
+                entry_filter.close()
+            if observer is not None:
+                observer.close()
             broker.close()
 
 

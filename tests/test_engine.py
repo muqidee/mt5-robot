@@ -1,4 +1,6 @@
 import shutil
+import threading
+import time
 import unittest
 import uuid
 from dataclasses import replace
@@ -11,6 +13,7 @@ from bijisatu.config import Config
 from bijisatu.engine import Engine, trading_day
 from bijisatu.models import Account, Bar, Position, Signal, SymbolSpec, Tick
 from bijisatu.state import StateError, StateStore
+from bijisatu.ollama import OllamaObserver
 
 
 class EngineTests(unittest.TestCase):
@@ -66,6 +69,94 @@ class EngineTests(unittest.TestCase):
         self.broker.send.assert_not_called()
         self.broker.connect.assert_not_called()
         self.evaluate.assert_called_once()
+
+    def test_observer_results_never_change_plans_sends_or_claims(self):
+        for execute in (False, True):
+            for judgement in ({"decision": "allow"}, {"decision": "skip"}, TimeoutError("offline")):
+                with self.subTest(execute=execute, judgement=judgement):
+                    store = StateStore(self.directory / (uuid.uuid4().hex + ".json"))
+                    observer = Mock()
+                    if isinstance(judgement, Exception):
+                        observer.submit.side_effect = judgement
+                    else:
+                        observer.submit.return_value = judgement
+                    self.broker.send.reset_mock()
+                    engine = Engine(self.broker, self.config, store, execute, observer=observer)
+                    result = engine.step(self.now)
+                    observer.submit.assert_called_once()
+                    self.assertEqual(result["status"], "sent" if execute else "dry_run")
+                    if execute:
+                        self.broker.send.assert_called_once()
+                        plan = self.broker.send.call_args.args[0]
+                        self.assertEqual(plan.side, "buy")
+                        self.assertEqual(plan.symbol, "EURUSD")
+                        self.assertEqual(len(store.data["attempts"]), 1)
+                    else:
+                        self.broker.send.assert_not_called()
+                        self.assertEqual(len(store.data["attempts"]), 1)
+                        self.assertEqual(result["plan"]["side"], "buy")
+
+    def test_async_judgement_does_not_change_order_or_duplicate_send(self):
+        for execute in (False, True):
+            baseline_store = StateStore(self.directory / (uuid.uuid4().hex + ".json"))
+            self.broker.send.reset_mock()
+            baseline = Engine(self.broker, self.config, baseline_store, execute).step(self.now)
+            expected_plan = self.broker.send.call_args.args[0] if execute else baseline["plan"]
+            for judgement in ({"decision": "allow", "reason": "ok"}, {"decision": "skip", "reason": "no"},
+                              TimeoutError(), ValueError("malformed")):
+                with self.subTest(execute=execute, judgement=judgement):
+                    store = StateStore(self.directory / (uuid.uuid4().hex + ".json"))
+                    config = replace(self.config, ollama_observation_enabled=True,
+                                     ollama_observation_timeout_seconds=0.1)
+                    options = {"side_effect": judgement} if isinstance(judgement, Exception) else {"return_value": judgement}
+                    self.broker.send.reset_mock()
+                    with patch("bijisatu.ollama.OllamaClient.judge", **options) as judge:
+                        observer = OllamaObserver(config)
+                        try:
+                            engine = Engine(self.broker, config, store, execute, observer)
+                            result = engine.step(self.now)
+                            observer.queue.join()
+                            judge.assert_called_once()
+                            self.assertEqual(result["status"], baseline["status"])
+                            actual_plan = self.broker.send.call_args.args[0] if execute else result["plan"]
+                            self.assertEqual(actual_plan, expected_plan)
+                            self.assertEqual(engine.step(self.now)["status"], "waiting")
+                            observer.queue.join()
+                            judge.assert_called_once()
+                            self.assertEqual(self.broker.send.call_count, int(execute))
+                        finally:
+                            observer.close()
+
+    def test_pending_judgement_never_delays_real_order_path(self):
+        started, release = threading.Event(), threading.Event()
+        def judge(snapshot):
+            started.set()
+            release.wait(1)
+            raise TimeoutError("mocked CPU inference stalled")
+        config = replace(self.config, ollama_observation_enabled=True,
+                         ollama_observation_timeout_seconds=0.1)
+        with patch("bijisatu.ollama.OllamaClient.judge", side_effect=judge):
+            observer = OllamaObserver(config)
+            try:
+                before = time.monotonic()
+                engine = Engine(self.broker, config, self.store, True, observer)
+                self.assertEqual(engine.step(self.now)["status"], "sent")
+                self.assertLess(time.monotonic() - before, 0.25)
+                self.assertTrue(started.wait(1))
+                self.assertFalse(release.is_set())
+                self.broker.send.assert_called_once()
+                self.assertEqual(engine.step(self.now)["status"], "waiting")
+                self.broker.send.assert_called_once()
+            finally:
+                release.set()
+                observer.close()
+
+    def test_default_engine_never_creates_or_calls_ollama(self):
+        with patch("bijisatu.ollama.OllamaClient.judge") as judge:
+            engine = self.engine()
+            self.assertIsNone(engine.observer)
+            self.assertEqual(engine.step(self.now)["status"], "dry_run")
+            judge.assert_not_called()
 
     def test_dry_run_needs_no_execution_configuration(self):
         self.assertEqual(self.engine(config=Config()).step(self.now)["status"], "dry_run")
@@ -256,7 +347,7 @@ class EngineTests(unittest.TestCase):
 
     def test_wide_stale_or_future_candidate_quote_is_skipped(self):
         for quote in (Tick(1.1, 1.101, self.now), Tick(1.1, 1.1001, self.now - 16),
-                      Tick(1.1, 1.1001, self.now + 1)):
+                      Tick(1.1, 1.1001, self.now + 2)):
             with self.subTest(quote=quote):
                 self.broker.tick.side_effect = None
                 self.broker.tick.return_value = quote
@@ -378,6 +469,97 @@ class EngineTests(unittest.TestCase):
         self.assertIn("Stale tick", record.details["error"])
         self.assertIn("spread_points", record.details)
         self.broker.send.assert_not_called()
+
+    def test_future_quote_tolerance_accepts_small_leads_and_exact_boundary(self):
+        engine = self.engine()
+        quote = Tick(1.1, 1.1001, self.now)
+        for lead in (0, 0.312, 1):
+            with self.subTest(lead=lead):
+                engine._fresh_tick(quote, self.now - lead)
+        with self.assertRaisesRegex(BrokerError, "Future tick.*tolerance=1.0s"):
+            engine._fresh_tick(quote, self.now - 1.001)
+        self.broker.send.assert_not_called()
+
+    def test_zero_tolerance_still_rejects_small_future_quotes(self):
+        engine = self.engine(config=replace(self.config, max_tick_future_seconds=0))
+        with self.assertRaisesRegex(BrokerError, "Future tick"):
+            engine._fresh_tick(Tick(1.1, 1.1001, self.now), self.now - 0.312)
+        self.broker.send.assert_not_called()
+
+    def test_stale_quote_boundary_is_unchanged_by_future_tolerance(self):
+        engine = self.engine()
+        quote = Tick(1.1, 1.1001, self.now)
+        engine._fresh_tick(quote, self.now + 15)
+        with self.assertRaisesRegex(BrokerError, "Stale tick"):
+            engine._fresh_tick(quote, self.now + 15.001)
+        self.broker.send.assert_not_called()
+
+    def test_open_risk_accepts_reported_subsecond_future_tick(self):
+        engine = self.engine()
+        with patch("bijisatu.engine.time.monotonic", return_value=0):
+            reserved = engine._open_risk([self.position()], self.now - 0.312)
+        self.assertGreater(reserved, 0)
+        self.broker.send.assert_not_called()
+
+    def test_open_risk_rejects_future_ticks_beyond_tolerance(self):
+        self.baseline()
+        self.broker.positions.return_value = [self.position()]
+        self.broker.tick.side_effect = lambda symbol: Tick(1.1, 1.1001, self.now + 2)
+        with patch("bijisatu.engine.time.monotonic", return_value=0):
+            result = self.engine(execute=True).step(self.now)
+        self.assertEqual(result["status"], "blocked")
+        self.assertIn("Future tick", result["reason"])
+        self.assertEqual(result["retry_seconds"], self.config.poll_seconds)
+        self.assertFalse(self.store.data["halted"])
+        self.broker.send.assert_not_called()
+        self.assertEqual(self.store.data["attempts"], {})
+
+    def test_open_risk_time_block_recovers_without_reset_or_order_retry(self):
+        self.baseline()
+        baseline = self.store.data["baseline"]
+        self.broker.positions.return_value = [self.position()]
+        engine = self.engine()
+        for lead in (1.199, -16):
+            with self.subTest(lead=lead):
+                self.broker.tick.side_effect = None
+                self.broker.tick.return_value = Tick(1.1, 1.1001, self.now + lead)
+                with patch("bijisatu.engine.time.monotonic", return_value=0):
+                    with self.assertLogs("bijisatu", level="WARNING") as captured:
+                        result = engine.step(self.now)
+                self.assertEqual(result["status"], "blocked")
+                self.assertEqual(captured.records[0].event, "quote_time_blocked")
+                self.assertNotIn("remaining_risk", result["account"])
+                self.assertEqual(self.store.data["baseline"], baseline)
+                self.assertFalse(self.store.data["halted"])
+                self.assertEqual(self.store.data["attempts"], {})
+                self.broker.profit.assert_not_called()
+        self.broker.tick.return_value = Tick(1.1, 1.1001, self.now)
+        with patch("bijisatu.engine.time.monotonic", return_value=0):
+            recovered = engine.step(self.now)
+        self.assertEqual(recovered["status"], "dry_run")
+        self.assertGreater(recovered["account"]["reserved_open_risk"], 0)
+        self.assertEqual(self.store.data["baseline"], baseline)
+        self.broker.send.assert_not_called()
+
+    def test_entry_scan_and_refresh_accept_one_second_clock_lead(self):
+        self.broker.tick.side_effect = lambda symbol: Tick(1.1, 1.1001, self.now + 1)
+        with patch("bijisatu.engine.time.monotonic", return_value=0):
+            result = self.engine().step(self.now)
+        self.assertEqual(result["status"], "dry_run")
+        self.assertNotIn("future_tick", result["skipped"])
+        self.assertEqual(self.broker.tick.call_count, 2)
+        self.broker.send.assert_not_called()
+
+    def test_entry_refresh_rejects_clock_lead_beyond_tolerance(self):
+        self.broker.tick.side_effect = [
+            Tick(1.1, 1.1001, self.now), Tick(1.1, 1.1001, self.now + 2),
+        ]
+        with patch("bijisatu.engine.time.monotonic", return_value=0):
+            result = self.engine(execute=True).step(self.now)
+        self.assertEqual(result["status"], "blocked")
+        self.assertIn("Future tick", result["reason"])
+        self.broker.send.assert_not_called()
+        self.assertEqual(self.store.data["attempts"], {})
 
     def test_future_quote_has_distinct_diagnostic(self):
         self.broker.tick.side_effect = lambda symbol: Tick(1.1, 1.1001, self.now + 60)

@@ -14,19 +14,26 @@ from .strategy import evaluate, fresh_candle, timeframes
 LOG = logging.getLogger("bijisatu")
 
 
+class TickTimeError(BrokerError):
+    """A quote cannot be used until its timestamp passes freshness checks."""
+
+
 def trading_day(now: float, offset_hours: float) -> tuple[str, float]:
     local = datetime.fromtimestamp(now, timezone(timedelta(hours=offset_hours)))
     return local.date().isoformat(), local.replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
 
 
 class Engine:
-    def __init__(self, broker, config: Config, store: StateStore, execute: bool = False):
+    def __init__(self, broker, config: Config, store: StateStore, execute: bool = False, observer=None,
+                 entry_filter=None):
         config.validate(execute)
         self.broker = broker
         self.config = config
         self.entry_minutes, self.trend_minutes = timeframes(config.strategy_mode)
         self.store = store
         self.execute = execute
+        self.observer = observer
+        self.entry_filter = entry_filter
         self.symbols = broker.symbols()
         if not self.symbols:
             raise BrokerError("No eligible symbols; configure exact broker symbol names")
@@ -83,10 +90,13 @@ class Engine:
         if not math.isfinite(tick.time) or not math.isfinite(now):
             raise BrokerError("Invalid quote timestamp; new entries disabled")
         age = now - tick.time
-        if age < 0:
-            raise BrokerError(f"Future tick: {-age:.3f}s ahead of the local UTC clock; check clock synchronization")
+        if age < -self.config.max_tick_future_seconds:
+            raise TickTimeError(
+                f"Future tick: {-age:.3f}s ahead of the local UTC clock exceeds "
+                f"tolerance={self.config.max_tick_future_seconds}s; check clock synchronization"
+            )
         if age > self.config.max_tick_age_seconds:
-            raise BrokerError(f"Stale tick: age={age:.3f}s exceeds limit={self.config.max_tick_age_seconds}s; waiting for a fresh quote")
+            raise TickTimeError(f"Stale tick: age={age:.3f}s exceeds limit={self.config.max_tick_age_seconds}s; waiting for a fresh quote")
 
     def _skip(self, symbol: str, reason: str, **details) -> None:
         self._skip_counts[reason] = self._skip_counts.get(reason, 0) + 1
@@ -97,7 +107,16 @@ class Engine:
     def step(self, now: float) -> dict:
         self._snapshot = {}
         self._skip_counts = {}
-        result = self._step(now)
+        try:
+            result = self._step(now)
+        except TickTimeError as exc:
+            LOG.warning("Entry paused until quote timestamps are valid", extra={
+                "event": "quote_time_blocked", "details": {
+                    "reason": str(exc), "retry_seconds": self.config.poll_seconds,
+                },
+            })
+            result = {"status": "blocked", "reason": str(exc),
+                      "retry_seconds": self.config.poll_seconds}
         result["account"] = self._snapshot
         result["skipped"] = self._skip_counts
         LOG.debug("Scan completed", extra={"event": "scan_completed", "details": result})
@@ -153,6 +172,7 @@ class Engine:
                 context = {"bid": quote.bid, "ask": quote.ask,
                            "tick_age_seconds": round(now - quote.time, 3),
                            "max_tick_age_seconds": self.config.max_tick_age_seconds,
+                           "max_tick_future_seconds": self.config.max_tick_future_seconds,
                            "spread_points": round((quote.ask - quote.bid) / spec.point, 3)}
                 self._fresh_tick(quote, now)
                 context["tick_time_utc"] = datetime.fromtimestamp(quote.time, timezone.utc).isoformat()
@@ -188,6 +208,17 @@ class Engine:
                     reason = "insufficient_history" if len(entry_bars) < 100 or len(closed_trend) < 100 else "no_trend_pullback_setup"
                     self._skip(symbol, reason, required_bars_per_timeframe=100, **context)
                     continue
+                if self.observer is not None:
+                    try:
+                        self.observer.submit(symbol, signal, self.entry_minutes, self.trend_minutes,
+                                             entry_bars, closed_trend, quote.ask - quote.bid)
+                    except Exception:
+                        LOG.info("Ollama observation unavailable; trading rules unchanged", extra={
+                            "event": "ollama_observation_error", "details": {
+                                "symbol": symbol, "bar_time": signal.bar_time,
+                                "observation_only": True, "reason": "scheduling_failed",
+                            },
+                        })
                 if attempt and signal.bar_time <= attempt["bar_time"]:
                     self._skip(symbol, "signal_already_processed", bar_time=signal.bar_time, **context)
                     continue
@@ -200,17 +231,36 @@ class Engine:
                 LOG.debug("Signal candidate found", extra={"event": "signal_candidate", "details": {
                     "symbol": symbol, "signal_reason": signal.reason, "bar_time": signal.bar_time, **context,
                 }})
-                candidates.append((spread_ratio, symbol, signal, spec, closed_trend[-1]))
+                binding = None
+                if self.config.ollama_filter_enabled:
+                    status = "unavailable"
+                    try:
+                        if self.entry_filter is not None:
+                            status, binding = self.entry_filter.check(
+                                symbol, signal, self.entry_minutes, self.trend_minutes,
+                                entry_bars, closed_trend, quote.ask - quote.bid)
+                    except Exception:
+                        LOG.info("Ollama entry filter unavailable", extra={
+                            "event": "ollama_filter_unavailable", "details": {
+                                "symbol": symbol, "bar_time": signal.bar_time,
+                                "execution_filter": True, "reason": "scheduling_failed",
+                            },
+                        })
+                    if status != "allowed" or binding is None:
+                        self._skip(symbol, "ollama_filter_" + (status if status in (
+                            "pending", "rejected", "unavailable") else "unavailable"))
+                        continue
+                candidates.append((spread_ratio, symbol, signal, spec, closed_trend[-1], binding))
             except (BrokerError, ValueError) as exc:
                 age = context.get("tick_age_seconds")
                 reason = "market_data_rejected"
-                if age is not None and age < 0:
+                if age is not None and age < -self.config.max_tick_future_seconds:
                     reason = "future_tick"
                 elif age is not None and age > self.config.max_tick_age_seconds:
                     reason = "stale_tick"
                 self._skip(symbol, reason, error=str(exc), **context)
         candidates.sort(key=lambda candidate: candidate[0])
-        for _, symbol, signal, spec, trend_bar in candidates:
+        for _, symbol, signal, spec, trend_bar, binding in candidates:
             now = cycle_time + time.monotonic() - started
             if trading_day(now, self.config.broker_utc_offset_hours or 0)[0] != state["day"]:
                 return {"status": "waiting", "reason": "Day changed during scan; rebaseline next cycle"}
@@ -264,20 +314,75 @@ class Engine:
                         or not fresh_candle(trend_bar, self.trend_minutes, now, 90)):
                     self._skip(symbol, "signal_expired_during_scan", bar_time=signal.bar_time)
                     continue
-                # Durable claim precedes the external side effect, including uncertain acknowledgements.
-                self.store.claim(symbol, signal.bar_time, now)
+                if trading_day(now, self.config.broker_utc_offset_hours or 0)[0] != state["day"]:
+                    return {"status": "waiting", "reason": "Day changed before entry; rebaseline next cycle"}
+                if self.execute and not account.trade_allowed:
+                    raise BrokerError("Trading permissions changed before entry")
+                if self.config.ollama_filter_enabled:
+                    try:
+                        allowed = self.entry_filter is not None and self.entry_filter.lookup(binding) == "allowed"
+                    except Exception:
+                        allowed = False
+                    if not allowed:
+                        self._skip(symbol, "ollama_filter_unavailable")
+                        continue
+                def claim_filtered_entry():
+                    # Broker preflight has passed; refresh safety immediately before the durable claim.
+                    current_time = cycle_time + time.monotonic() - started
+                    live_account = self.broker.account()
+                    live_positions = self.broker.positions()
+                    if (not live_account.trade_allowed or self.broker.has_orders()
+                            or len(live_positions) >= self.config.max_positions
+                            or any(p.symbol == symbol for p in live_positions)):
+                        raise BrokerError("Exposure or trading permissions changed before filtered entry")
+                    if trading_day(current_time, self.config.broker_utc_offset_hours or 0)[0] != state["day"]:
+                        raise BrokerError("Day changed before filtered entry")
+                    _, cashflow = self.broker.activity(state["baseline_at"], current_time)
+                    if cashflow:
+                        self.store.halt("Account cash flow detected before filtered entry")
+                        raise BrokerError("Daily baseline changed before filtered entry")
+                    live_loss = max(0.0, state["baseline"] - live_account.equity)
+                    if live_loss >= limit:
+                        self.store.halt("Daily equity loss limit reached before filtered entry")
+                        raise BrokerError("Daily equity loss limit reached before filtered entry")
+                    live_reserved = self._open_risk(live_positions, current_time)
+                    live_budget = self._entry_budget(live_account.equity, limit, live_loss, live_reserved)
+                    if plan.risk_amount > min(live_budget, live_account.equity * self.config.risk_fraction):
+                        raise BrokerError("Risk budget changed before filtered entry")
+                    live_quote = self.broker.tick(symbol)
+                    current_time = cycle_time + time.monotonic() - started
+                    self._fresh_tick(live_quote, current_time)
+                    live_entry = live_quote.ask if signal.side == "buy" else live_quote.bid
+                    if (abs(live_entry - plan.entry) > deviation
+                            or (live_quote.ask - live_quote.bid) / signal.atr > self.config.max_spread_atr):
+                        raise BrokerError("Quote changed before filtered entry")
+                    if (trading_day(current_time, self.config.broker_utc_offset_hours or 0)[0] != state["day"]
+                            or not 0 <= current_time - (signal.bar_time + self.entry_minutes * 60) <= self.entry_minutes * 60 + 30
+                            or not fresh_candle(trend_bar, self.trend_minutes, current_time, 90)
+                            or self.entry_filter.lookup(binding) != "allowed"):
+                        raise BrokerError("Filter approval, trading day or signal expired before entry")
+                    self.store.claim(symbol, signal.bar_time, current_time)
+
+                # Claim only after approval; filter execution defers it until broker preflight passes.
+                if not self.execute or not self.config.ollama_filter_enabled:
+                    self.store.claim(symbol, signal.bar_time, now)
                 if not self.execute:
                     return {"status": "dry_run", "plan": asdict(plan), "currency": account.currency,
                             "note": "No order sent; observation only, not simulated profit"}
-                result = self.broker.send(plan)
+                result = (self.broker.send(plan, before_send=claim_filtered_entry)
+                          if self.config.ollama_filter_enabled else self.broker.send(plan))
                 return {"status": "sent", "plan": asdict(plan), "result": result, "currency": account.currency}
             except OrderUncertain as exc:
                 self.store.halt(str(exc))
                 return {"status": "halted", "reason": str(exc)}
+            except TickTimeError:
+                raise
             except BrokerError as exc:
                 LOG.warning("Entry skipped", extra={"event": "entry_rejected", "details": {
                     "symbol": symbol, "reason": str(exc),
                 }})
+                if state["halted"]:
+                    return {"status": "halted", "reason": state["reason"]}
                 return {"status": "blocked", "reason": str(exc)}
         return {"status": "waiting", "symbols": len(self.symbols), "remaining": budget}
 

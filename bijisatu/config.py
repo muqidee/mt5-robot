@@ -3,6 +3,7 @@ import math
 from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 
+from .ollama import validate_settings
 from .strategy import timeframes
 
 
@@ -32,9 +33,23 @@ class Config:
     heartbeat_seconds: int = 60
     strategy_mode: str = "scalping"
     max_open_risk_fraction: float = 0.05
+    max_tick_future_seconds: float = 1.0
+    ollama_filter_enabled: bool = False
+    ollama_observation_enabled: bool = False
+    ollama_observation_endpoint: str = "http://127.0.0.1:11435"
+    ollama_observation_model: str = "qwen3:4b"
+    ollama_observation_timeout_seconds: float = 10.0
+    ollama_observation_queue_capacity: int = 4
 
     def validate(self, execute: bool = False) -> None:
         timeframes(self.strategy_mode)
+        if type(self.ollama_filter_enabled) is not bool:
+            raise ValueError("ollama_filter_enabled must be boolean")
+        if self.ollama_filter_enabled and self.ollama_observation_enabled:
+            raise ValueError("Ollama filter and observation modes are mutually exclusive")
+        validate_settings(self.ollama_observation_enabled, self.ollama_observation_endpoint,
+                          self.ollama_observation_model, self.ollama_observation_timeout_seconds,
+                          self.ollama_observation_queue_capacity)
         for name, value in asdict(self).items():
             if isinstance(value, float) and not math.isfinite(value):
                 raise ValueError(f"{name} must be finite")
@@ -46,6 +61,9 @@ class Config:
             value = getattr(self, name)
             if type(value) is not int or value <= 0:
                 raise ValueError(f"{name} must be a positive integer")
+        value = self.max_tick_future_seconds
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not 0 <= value <= 1:
+            raise ValueError("max_tick_future_seconds must be between 0 and 1")
         if self.max_positions > 10:
             raise ValueError("max_positions cannot exceed the absolute cap of 10")
         if type(self.deviation_points) is not int or self.deviation_points < 0:

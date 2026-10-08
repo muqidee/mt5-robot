@@ -1,111 +1,121 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "title": "BijiSatu configuration",
-  "description": "Optional settings for the MT5 runtime. Missing fields use the displayed defaults. Changing this file does not update an already running process; restart the robot to load changes.",
+  "title": "Konfigurasi BijiSatu",
+  "description": "Pengaturan opsional untuk robot MT5. Kolom yang tidak diisi memakai nilai bawaan yang ditampilkan. Mengubah konfigurasi tidak memperbarui proses yang sedang berjalan; restart robot untuk menerapkan perubahan.",
   "type": "object",
   "additionalProperties": false,
   "properties": {
     "strategy_mode": {
       "type": "string",
-      "enum": ["scalping", "intraday"],
+      "enum": [
+        "scalping",
+        "intraday"
+      ],
       "default": "scalping",
-      "description": "Selects closed-candle EMA trend/pullback trading: scalping uses M1 entries and M5 trend; intraday uses M15 entries and H1 trend. ATR14 is measured on the entry timeframe. Intraday is a hypothesis to test, not a guarantee of daily profit or a same-day exit. Changing modes does not clear saved daily halts or attempts."
+      "description": "Memilih strategi tren/pullback EMA dengan candle yang sudah ditutup. scalping memakai entry M1 dan tren M5; intraday memakai entry M15 dan tren H1. ATR14 dihitung pada timeframe entry. Intraday perlu diuji, bukan jaminan profit harian atau posisi selesai pada hari yang sama. Mengganti mode tidak menghapus penghentian harian maupun riwayat percobaan entry."
     },
     "max_open_risk_fraction": {
       "type": "number",
       "exclusiveMinimum": 0,
       "exclusiveMaximum": 1,
       "default": 0.05,
-      "description": "Combined planned open-position risk ceiling as a fraction of CURRENT equity: 0.05 = 5%. Reserves loss from current bid/ask marks to server stops plus estimated round-trip commission and risk_buffer. Each candidate is capped by the smaller of unused open-risk capacity and remaining daily budget. It does not close or modify existing positions if falling equity exceeds the ceiling, and gaps can exceed planned risk."
+      "description": "Batas gabungan risiko yang direncanakan untuk posisi terbuka, sebagai pecahan equity SAAT INI: 0.05 = 5%. Risiko dicadangkan dari harga bid/ask saat ini hingga SL di server, ditambah estimasi komisi buka-tutup dan risk_buffer. Anggaran entry mengikuti nilai terkecil antara sisa batas risiko terbuka dan sisa anggaran harian. Posisi lama tidak ditutup atau diubah ketika equity turun hingga batas terlampaui. Gap dapat menyebabkan kerugian melebihi perkiraan."
     },
     "risk_fraction": {
       "type": "number",
       "exclusiveMinimum": 0,
       "exclusiveMaximum": 1,
       "default": 0.03,
-      "description": "Maximum planned risk per new entry as a fraction of current account equity: 0.03 = 3%, not 0.03 lots. Cannot exceed daily_loss_fraction. Remaining daily budget and open-position risk may reduce the volume or prevent entry. Gaps and slippage can exceed planned risk."
+      "description": "Risiko maksimal yang direncanakan per entry baru, sebagai pecahan equity akun saat ini: 0.03 = 3%, BUKAN 0.03 lot. Tidak boleh melebihi daily_loss_fraction. Sisa anggaran harian dan risiko posisi terbuka dapat mengecilkan lot atau membatalkan entry. Gap dan slippage dapat menyebabkan kerugian melebihi perkiraan."
     },
     "daily_loss_fraction": {
       "type": "number",
       "exclusiveMinimum": 0,
       "exclusiveMaximum": 1,
       "default": 0.05,
-      "description": "Daily equity-loss threshold as a fraction of the day's saved baseline: 0.05 = 5%. Includes realized and floating account PnL. Reaching it blocks new entries until the next broker day, even if equity recovers. Existing positions are not forcibly closed; actual loss can exceed this threshold."
+      "description": "Batas penurunan equity harian sebagai pecahan baseline yang tersimpan: 0.05 = 5%. Mencakup hasil transaksi yang sudah selesai dan untung/rugi posisi terbuka. Jika tercapai, entry baru dihentikan hingga hari broker berikutnya, meskipun equity pulih. Posisi lama tidak ditutup paksa; kerugian aktual bisa melebihi batas ini."
     },
     "max_positions": {
       "type": "integer",
       "minimum": 1,
       "maximum": 10,
       "default": 2,
-      "description": "Maximum simultaneous open positions allowed before new entries are blocked, with an absolute cap of 10. The robot also allows only one position per symbol. This is an upper limit, not a target; account-wide risk limits still apply. Foreign/manual positions block entries separately."
+      "description": "Jumlah maksimal posisi terbuka bersamaan sebelum entry baru diblokir, dengan batas mutlak 10 posisi. Robot hanya mengizinkan satu posisi per simbol. Ini batas atas, bukan target jumlah transaksi; batas risiko akun tetap berlaku. Posisi manual atau strategi lain dapat memblokir entry secara terpisah."
     },
     "max_symbols": {
       "type": "integer",
       "minimum": 1,
       "default": 20,
-      "description": "Maximum symbols in the scan list, whether discovered automatically or supplied in symbols. An explicit list is deduplicated in order and truncated to this limit. Scanning a symbol does not guarantee a trade."
+      "description": "Jumlah maksimal simbol yang dipindai, baik ditemukan otomatis maupun ditentukan dalam symbols. Daftar eksplisit dibuang duplikatnya dengan mempertahankan urutan, lalu dibatasi sebanyak nilai ini. Simbol yang dipindai belum tentu menghasilkan transaksi."
     },
     "poll_seconds": {
       "type": "integer",
       "minimum": 1,
       "default": 5,
-      "description": "Seconds to sleep after each completed scan. Actual time between scans also includes processing time. This is not a trade frequency or chart timeframe; signals use the closed entry/trend candles selected by strategy_mode."
+      "description": "Waktu tunggu dalam detik setelah setiap pemindaian selesai. Jarak waktu antar pemindaian juga mencakup waktu pemrosesan. Ini bukan target frekuensi transaksi atau timeframe chart; sinyal memakai candle entry/tren yang sudah ditutup sesuai strategy_mode."
     },
     "cooldown_seconds": {
       "type": "integer",
       "minimum": 1,
       "default": 300,
-      "description": "Minimum time between entry attempts for the same symbol: 300 seconds = 5 minutes. The attempt is saved before sending an order, so dry-run plans and rejected or uncertain sends can also start the cooldown. It is not the holding time of a position."
+      "description": "Jeda minimal antar percobaan entry pada simbol yang sama: 300 detik = 5 menit. Percobaan disimpan sebelum order dikirim, sehingga rencana dry-run dan pengiriman yang ditolak atau belum pasti juga bisa memulai jeda. Ini bukan batas waktu menahan posisi."
     },
     "max_tick_age_seconds": {
       "type": "integer",
       "minimum": 1,
       "default": 15,
-      "description": "Maximum accepted age of a bid/ask quote relative to the current UTC clock, in seconds. Older quotes are skipped. Future timestamps are rejected independently; increasing this value does not make an inactive feed fresh."
+      "description": "Usia maksimal harga bid/ask yang diterima dibandingkan waktu UTC saat ini, dalam detik. Harga yang lebih lama ditolak. Timestamp yang lebih maju memakai toleransi terpisah max_tick_future_seconds. Menaikkan nilai ini tidak membuat sumber harga yang berhenti menjadi segar kembali."
+    },
+    "max_tick_future_seconds": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1,
+      "default": 1.0,
+      "description": "Toleransi maksimal timestamp harga yang lebih maju daripada jam UTC komputer, dalam detik. Bawaan 1 detik dan tidak boleh melebihi 1. Gunakan 0 untuk menolak semua timestamp masa depan. Selisih lebih besar tetap ditolak; batas usia harga dan validasi candle tidak dilonggarkan. Entry yang terblokir karena timestamp akan diperiksa ulang pada pemindaian berikutnya."
     },
     "max_spread_atr": {
       "type": "number",
       "exclusiveMinimum": 0,
       "exclusiveMaximum": 1,
       "default": 0.15,
-      "description": "Maximum spread divided by entry-timeframe ATR14 (M1 scalping, M15 intraday). 0.15 means spread must be at most 15% of ATR, NOT 0.15 pips. Example: spread 0.8 pip / ATR 1.6 pips = 0.50, so a 0.15 limit rejects entry. Raising this value admits more expensive setups relative to volatility and should be tested offline first."
+      "description": "Batas rasio spread terhadap ATR14 pada timeframe entry: M1 untuk scalping, M15 untuk intraday. 0.15 berarti spread maksimal 15% ATR, BUKAN 0.15 pip. Contoh: spread 0.8 pip / ATR 1.6 pip = 0.50, sehingga ditolak oleh batas 0.15. Nilai lebih tinggi menerima biaya spread yang lebih besar dibanding volatilitas; uji terlebih dahulu lewat backtest."
     },
     "stop_atr": {
       "type": "number",
       "exclusiveMinimum": 0,
       "default": 1.5,
-      "description": "Initial stop-loss distance multiplier applied to entry-timeframe ATR14 (M1 scalping, M15 intraday): 1.5 means 1.5 times ATR. Spread, broker minimum stop distance and tick-size rounding can widen the actual stop. Lot sizing uses the resulting stop distance."
+      "description": "Pengali ATR14 untuk jarak SL awal pada timeframe entry: M1 untuk scalping, M15 untuk intraday. 1.5 berarti 1.5 kali ATR. Spread, jarak stop minimal broker, dan pembulatan tick dapat memperlebar SL aktual. Lot dihitung berdasarkan jarak SL yang dihasilkan."
     },
     "reward_ratio": {
       "type": "number",
       "exclusiveMinimum": 0,
       "default": 1.5,
-      "description": "Take-profit distance divided by the actual entry-to-stop distance, before costs: 1.5 targets a price move 1.5 times the stop distance. This is not a win-rate estimate or a guaranteed net return. Tick-size rounding can change the exact ratio."
+      "description": "Rasio jarak TP terhadap jarak entry ke SL aktual, sebelum biaya. 1.5 menargetkan pergerakan harga sebesar 1.5 kali jarak SL. Ini bukan perkiraan persentase kemenangan atau jaminan keuntungan bersih. Pembulatan tick dapat mengubah rasio aktual."
     },
     "risk_buffer": {
       "type": "number",
       "minimum": 1,
       "default": 1.15,
-      "description": "Multiplier applied to estimated stop-loss risk and commission for conservative sizing and open-risk reservations. 1.15 adds a 15% cushion; 1 adds none. A larger buffer normally reduces lot size. It does not guarantee protection from gaps or extreme slippage."
+      "description": "Pengali estimasi risiko SL dan komisi untuk perhitungan lot serta cadangan risiko terbuka yang lebih konservatif. 1.15 menambah cadangan 15%; 1 tidak menambah cadangan. Nilai lebih besar biasanya mengecilkan lot. Tidak menjamin perlindungan terhadap gap atau slippage ekstrem."
     },
     "max_margin_fraction": {
       "type": "number",
       "exclusiveMinimum": 0,
       "exclusiveMaximum": 1,
       "default": 0.8,
-      "description": "Maximum fraction of currently available free margin that a proposed order may require: 0.8 = 80%. An order above the cap is rejected rather than automatically resized by this check. This is a margin safeguard, not permission to risk 80% of equity."
+      "description": "Bagian maksimal dari free margin saat ini yang boleh dibutuhkan order baru: 0.8 = 80%. Order yang melebihi batas ditolak, bukan otomatis diperkecil oleh pemeriksaan ini. Ini pengaman margin, BUKAN izin merisikokan 80% equity."
     },
     "deviation_points": {
       "type": "integer",
       "minimum": 0,
       "default": 10,
-      "description": "Allowed entry-price deviation in broker points, not pips. On five-decimal EURUSD, 10 points = 1 pip. Used for the pre-send price check, order request and conservative loss estimate. Broker execution rules can differ; it is not a guaranteed slippage cap."
+      "description": "Penyimpangan harga entry yang diizinkan dalam point broker, bukan pip. Pada EURUSD dengan lima angka desimal, 10 point = 1 pip. Dipakai untuk pemeriksaan harga sebelum pengiriman, permintaan order, dan estimasi kerugian konservatif. Aturan eksekusi broker bisa berbeda; ini bukan jaminan batas slippage."
     },
     "magic": {
       "type": "integer",
       "minimum": 1,
       "default": 810031,
-      "description": "Positive integer identifying this robot's orders and positions. Keep it stable while positions are open; otherwise existing positions can be treated as foreign and block entries. Do not reuse it for unrelated strategies on the same account."
+      "description": "Bilangan bulat positif sebagai penanda order dan posisi robot ini. Jangan diubah selama masih ada posisi terbuka; posisi lama bisa dianggap milik strategi lain dan memblokir entry. Jangan digunakan ulang oleh strategi lain pada akun yang sama."
     },
     "symbols": {
       "type": "array",
@@ -115,52 +125,118 @@
         "pattern": "\\S"
       },
       "default": [],
-      "description": "Exact broker symbol names to scan, for example EURUSDc and GBPUSDc where those names exist. An empty list enables metadata-based discovery, capped by max_symbols. An explicit list is preferable when testing selected instruments. Multiple symbols can share correlated risk."
+      "description": "Nama simbol broker yang persis untuk dipindai, misalnya EURUSDc dan GBPUSDc jika tersedia. Daftar kosong mengaktifkan pencarian berdasarkan metadata, dibatasi max_symbols. Daftar eksplisit lebih sesuai untuk menguji instrumen tertentu. Beberapa simbol dapat memiliki risiko yang saling berkorelasi."
     },
     "account_login": {
-      "type": ["integer", "null"],
+      "type": [
+        "integer",
+        "null"
+      ],
       "minimum": 1,
       "default": null,
-      "description": "MT5 trading-account login number used to reject connection to an unintended account. It is not an email or password. null leaves observation unlocked and is forbidden for --execute. Store the real number only in ignored local configuration."
+      "description": "Nomor login akun trading MT5 untuk mencegah koneksi ke akun yang salah. Bukan email atau kata sandi. null tidak membatasi akun pada mode observasi, tetapi tidak diizinkan untuk --execute. Simpan nomor akun dalam konfigurasi lokal yang dikecualikan dari Git."
     },
     "broker_utc_offset_hours": {
-      "type": ["number", "null"],
+      "type": [
+        "number",
+        "null"
+      ],
       "minimum": -14,
       "maximum": 14,
       "default": null,
-      "description": "Broker server's offset from UTC, in hours, used for daily risk resets: 0 = UTC, 2 = UTC+2, -3.5 = UTC-3:30. Verify with the broker and account for DST changes. null uses UTC with a warning in observation and is forbidden for execution. Market-session labels have their own timezone rules."
+      "description": "Selisih waktu server broker terhadap UTC, dalam jam, untuk pergantian hari risiko: 0 = UTC, 2 = UTC+2, -3.5 = UTC-3:30. Konfirmasi ke broker dan sesuaikan jika ada perubahan DST. null memakai UTC dengan peringatan pada observasi, tetapi tidak diizinkan untuk eksekusi. Label sesi pasar memakai aturan zona waktu tersendiri."
     },
     "commission_per_lot": {
-      "type": ["number", "null"],
+      "type": [
+        "number",
+        "null"
+      ],
       "minimum": 0,
       "default": null,
-      "description": "Estimated round-trip opening PLUS closing commission for one lot, in account-currency units. 0 explicitly assumes no commission; it does not mean zero spread or swap. On a USC account use cents, not dollar amounts. null is treated as zero in observation sizing but blocks execution. Use a conservative estimate if selected symbols have different fees."
+      "description": "Estimasi total komisi pembukaan DITAMBAH penutupan untuk satu lot, dalam mata uang akun. 0 secara eksplisit mengasumsikan tanpa komisi, bukan tanpa spread atau swap. Untuk akun USC gunakan sen, bukan dolar. null dianggap nol saat menghitung lot observasi, tetapi memblokir eksekusi. Gunakan estimasi konservatif jika biaya antar simbol berbeda."
     },
     "terminal_path": {
-      "type": ["string", "null"],
+      "type": [
+        "string",
+        "null"
+      ],
       "default": null,
-      "description": "Optional path to the intended MT5 terminal executable, useful when multiple terminals are installed. Escape Windows backslashes in JSON, for example C:\\Program Files\\Broker MT5\\terminal64.exe becomes C:\\\\Program Files\\\\Broker MT5\\\\terminal64.exe in the JSON string. null uses the MT5 package's default terminal discovery."
+      "description": "Lokasi opsional executable terminal MT5 yang dituju, berguna jika ada beberapa terminal terpasang. Dalam string JSON, setiap backslash Windows harus ditulis dua kali, misalnya C:\\\\Program Files\\\\Broker MT5\\\\terminal64.exe. null memakai pencarian terminal bawaan paket MT5."
     },
     "state_dir": {
       "type": "string",
       "minLength": 1,
       "pattern": "\\S",
       "default": "state",
-      "description": "Directory holding durable daily baselines, halted-day flags and entry-attempt history, separated by account and mode. Relative paths use the process working directory; the launcher sets it to the project root. Do not delete, move or edit state to bypass limits. Exclude any custom location from Git."
+      "description": "Folder penyimpanan baseline harian, status penghentian harian, dan riwayat percobaan entry secara permanen, terpisah berdasarkan akun dan mode. Path relatif mengikuti folder kerja proses; launcher memakai root proyek. Jangan hapus, pindahkan, atau edit state untuk melewati batas risiko. Kecualikan lokasi khusus dari Git."
     },
     "log_dir": {
       "type": "string",
       "minLength": 1,
       "pattern": "\\S",
       "default": "logs",
-      "description": "Base directory for daily JSONL records, written under bijisatu/YYYY-MM-DD.jsonl using UTC dates. Includes DEBUG details even without --verbose. Files are appended and are not deleted automatically. Relative paths use the working directory. Exclude custom locations from Git and monitor disk usage."
+      "description": "Folder dasar log JSONL harian, disimpan pada bijisatu/YYYY-MM-DD.jsonl berdasarkan tanggal UTC. Detail DEBUG tetap disimpan tanpa --verbose. Catatan ditambahkan ke file dan tidak dihapus otomatis. Path relatif mengikuti folder kerja. Kecualikan lokasi khusus dari Git dan pantau penggunaan disk."
     },
     "heartbeat_seconds": {
       "type": "integer",
       "minimum": 1,
       "default": 60,
-      "description": "Interval for repeating an unchanged runtime status in the terminal, checked after each scan. 60 means roughly once per minute; a slow scan can delay it. Status changes are reported earlier. This does not change scan frequency, signal rules or trade frequency."
+      "description": "Interval pengulangan status yang tidak berubah di terminal, diperiksa setelah setiap pemindaian. 60 berarti sekitar sekali per menit; pemindaian lambat dapat menundanya. Perubahan status dilaporkan lebih cepat. Tidak mengubah frekuensi pemindaian, aturan sinyal, atau frekuensi transaksi."
+    },
+    "ollama_observation_enabled": {
+      "type": "boolean",
+      "default": false,
+      "description": "Mengaktifkan penilaian sinyal oleh Ollama lokal secara terpisah, hanya untuk observasi. Penilaian tidak menyaring entry, mengubah risiko, mencatat klaim percobaan, atau mengizinkan order. Bawaan nonaktif; berbeda dari pilihan dry-run atau execute."
+    },
+    "ollama_observation_endpoint": {
+      "type": "string",
+      "default": "http://127.0.0.1:11435",
+      "description": "Alamat HTTP lokal untuk observasi atau filter melalui POST /api/chat. Runtime hanya menerima localhost atau alamat loopback IPv4/IPv6 literal dengan port opsional, tanpa kredensial, path, query, atau fragment. Tidak memakai DNS, proxy, atau pengalihan alamat."
+    },
+    "ollama_observation_model": {
+      "type": "string",
+      "default": "qwen3:4b",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$",
+      "maxLength": 128,
+      "description": "Nama model Ollama lokal yang sudah terpasang untuk observasi atau filter. Model tidak diunduh otomatis. Nama harus 1–128 karakter, terdiri atas huruf, angka, titik, underscore, titik dua, slash, atau tanda hubung. Persetujuan filter terikat pada model yang diminta."
+    },
+    "ollama_observation_timeout_seconds": {
+      "type": "number",
+      "default": 10.0,
+      "minimum": 0.1,
+      "maximum": 30,
+      "description": "Batas waktu total permintaan observasi atau filter dalam detik, termasuk koneksi, pengiriman, dan pembacaan respons. Pemrosesan CPU bisa melampauinya; observasi hanya mencatat kegagalan, sedangkan filter memblokir entry. Persetujuan filter kedaluwarsa maksimal 30 detik sejak antrean dibuat. Saat shutdown, waktu tunggu maksimal adalah batas ini ditambah 0.2 detik."
+    },
+    "ollama_observation_queue_capacity": {
+      "type": "integer",
+      "default": 4,
+      "minimum": 1,
+      "maximum": 32,
+      "description": "Jumlah maksimal snapshot menunggu, di luar satu permintaan aktif. Satu worker memproses antrean tanpa menahan pemindaian. Jika penuh, unavailable dicatat tanpa mencoba ulang simbol/candle; observasi tidak menyaring order, sedangkan filter memblokir entry tersebut."
+    },
+    "ollama_filter_enabled": {
+      "type": "boolean",
+      "default": false,
+      "description": "Mengaktifkan filter entry lokal: sinyal strategi DAN persetujuan Qwen yang valid, cocok persis, dan belum kedaluwarsa wajib tersedia. Bawaan nonaktif; tidak boleh bersamaan dengan ollama_observation_enabled. Pending, skip, timeout, respons tidak valid, antrean penuh, atau layanan gagal memblokir entry baru tanpa menunggu worker. Model tidak mengubah lot, SL/TP, atau risiko; opsi ini bukan izin execute."
     }
-  }
+  },
+  "allOf": [
+    {
+      "not": {
+        "properties": {
+          "ollama_filter_enabled": {
+            "const": true
+          },
+          "ollama_observation_enabled": {
+            "const": true
+          }
+        },
+        "required": [
+          "ollama_filter_enabled",
+          "ollama_observation_enabled"
+        ]
+      }
+    }
+  ]
 }
 

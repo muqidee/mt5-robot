@@ -100,6 +100,32 @@ class BrokerNativeConstantsTests(BrokerFixture):
 
 
 class BrokerTests(BrokerFixture):
+    def test_filter_claim_callback_only_after_all_preflight_guards(self):
+        callback = Mock()
+        def before_send():
+            self.mt5.order_check.assert_called_once()
+            self.mt5.order_send.assert_not_called()
+            callback()
+        self.broker.send(self.plan, before_send=before_send)
+        callback.assert_called_once()
+        self.mt5.order_send.assert_called_once()
+
+    def test_rejected_preflight_never_calls_filter_claim(self):
+        callback = Mock()
+        self.mt5.order_check.return_value = SimpleNamespace(retcode=1)
+        with self.assertRaises(BrokerError):
+            self.broker.send(self.plan, before_send=callback)
+        callback.assert_not_called()
+        self.mt5.order_send.assert_not_called()
+
+    def test_filter_final_guard_failure_never_sends(self):
+        callback = Mock(side_effect=BrokerError("Approval expired"))
+        with self.assertRaises(BrokerError):
+            self.broker.send(self.plan, before_send=callback)
+        callback.assert_called_once()
+        self.mt5.order_check.assert_called_once()
+        self.mt5.order_send.assert_not_called()
+
     def test_market_execution_without_supported_mask_never_sends(self):
         self.raw_symbol.filling_mode = 0
         with self.assertRaises(BrokerError):

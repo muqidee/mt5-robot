@@ -131,7 +131,7 @@ class MT5Broker:
             raise BrokerError(f"Cannot calculate account-currency risk: {symbol}")
         return value
 
-    def send(self, plan: OrderPlan) -> str:
+    def send(self, plan: OrderPlan, *, before_send=None) -> str:
         account = self.account()
         if not account.trade_allowed:
             raise BrokerError("Automated trading is not permitted by terminal/account")
@@ -175,6 +175,8 @@ class MT5Broker:
         if check is None or check.retcode != 0:
             raise BrokerError(f"Order check rejected: {getattr(check, 'retcode', 'unavailable')}")
         self.account()
+        if before_send is not None:
+            before_send()
         try:
             result = self.mt5.order_send(request)
         except Exception as exc:

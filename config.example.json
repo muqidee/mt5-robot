@@ -6,6 +6,7 @@
   "poll_seconds": 5,
   "cooldown_seconds": 300,
   "max_tick_age_seconds": 15,
+  "max_tick_future_seconds": 1.0,
   "max_spread_atr": 0.15,
   "stop_atr": 1.5,
   "reward_ratio": 1.5,
@@ -22,6 +23,12 @@
   "log_dir": "logs",
   "heartbeat_seconds": 60,
   "strategy_mode": "scalping",
-  "max_open_risk_fraction": 0.05
+  "max_open_risk_fraction": 0.05,
+  "ollama_filter_enabled": false,
+  "ollama_observation_enabled": false,
+  "ollama_observation_endpoint": "http://127.0.0.1:11435",
+  "ollama_observation_model": "qwen3:4b",
+  "ollama_observation_timeout_seconds": 10.0,
+  "ollama_observation_queue_capacity": 4
 }
 
