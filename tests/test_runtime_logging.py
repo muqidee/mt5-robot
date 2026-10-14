@@ -15,7 +15,7 @@ from bijisatu.models import Account
 
 class RuntimeLoggingTests(unittest.TestCase):
     def setUp(self):
-        directory = tempfile.TemporaryDirectory()
+        directory = tempfile.TemporaryDirectory(prefix=".runtime-test-", dir=Path(__file__).resolve().parent)
         self.addCleanup(directory.cleanup)
         self.directory = Path(directory.name)
         self.logs = self.directory / "logs"
@@ -95,6 +95,39 @@ class RuntimeLoggingTests(unittest.TestCase):
         self.assertEqual(first.kwargs["extra"]["event"], "runtime_status")
         self.assertEqual(heartbeat.kwargs["extra"]["event"], "heartbeat")
         self.assertEqual(heartbeat.kwargs["extra"]["details"]["cycle"], 3)
+
+    def test_equity_quote_and_remaining_noise_only_emit_at_heartbeat(self):
+        engine = Mock()
+        engine.step.side_effect = [self.result, self.result | {"account": self.result["account"] | {"equity": 4061}, "remaining": 202},
+                                   self.result | {"account": self.result["account"] | {"equity": 4062}}]
+        logger = Mock(spec=logging.Logger)
+        with patch("bijisatu.cli.time.monotonic", side_effect=[0, 5, 60]), \
+                patch("bijisatu.cli.time.sleep", side_effect=[None, None, KeyboardInterrupt]):
+            with self.assertRaises(KeyboardInterrupt):
+                _observe(engine, Config(), logger, once=False)
+        self.assertEqual([call.kwargs["extra"]["event"] for call in logger.log.call_args_list], ["runtime_status", "heartbeat"])
+
+    def test_quote_age_noise_does_not_change_status_signature(self):
+        engine = Mock()
+        engine.step.side_effect = [{"status": "blocked", "reason": "Stale tick: age=20s"},
+                                   {"status": "blocked", "reason": "Stale tick: age=25s"},
+                                   {"status": "blocked", "reason": "Future tick: 2s ahead"}]
+        logger = Mock(spec=logging.Logger)
+        with patch("bijisatu.cli.time.monotonic", side_effect=[0, 5, 10]), \
+                patch("bijisatu.cli.time.sleep", side_effect=[None, None, KeyboardInterrupt]):
+            with self.assertRaises(KeyboardInterrupt):
+                _observe(engine, Config(), logger, once=False)
+        self.assertEqual(logger.log.call_count, 2)
+
+    def test_changed_reason_or_skip_counts_emits_immediately(self):
+        engine = Mock()
+        engine.step.side_effect = [self.result, self.result | {"reason": "Risk blocked"}, self.result | {"skipped": {"cooldown": 1}}]
+        logger = Mock(spec=logging.Logger)
+        with patch("bijisatu.cli.time.monotonic", side_effect=[0, 5, 10]), \
+                patch("bijisatu.cli.time.sleep", side_effect=[None, None, KeyboardInterrupt]):
+            with self.assertRaises(KeyboardInterrupt):
+                _observe(engine, Config(), logger, once=False)
+        self.assertEqual(logger.log.call_count, 3)
 
     def test_halted_status_is_a_warning(self):
         engine = Mock()

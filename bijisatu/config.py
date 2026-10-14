@@ -34,6 +34,7 @@ class Config:
     strategy_mode: str = "scalping"
     max_open_risk_fraction: float = 0.05
     max_tick_future_seconds: float = 1.0
+    market_commentary_enabled: bool = False
     ollama_filter_enabled: bool = False
     ollama_observation_enabled: bool = False
     ollama_observation_endpoint: str = "http://127.0.0.1:11435"
@@ -43,6 +44,8 @@ class Config:
 
     def validate(self, execute: bool = False) -> None:
         timeframes(self.strategy_mode)
+        if type(self.market_commentary_enabled) is not bool:
+            raise ValueError("market_commentary_enabled must be boolean")
         if type(self.ollama_filter_enabled) is not bool:
             raise ValueError("ollama_filter_enabled must be boolean")
         if self.ollama_filter_enabled and self.ollama_observation_enabled:

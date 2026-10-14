@@ -172,7 +172,7 @@ class LoggingTests(unittest.TestCase):
                      "tp": 1.130987654, "risk_amount": 123.456789, "risk_fraction": 0.0123456789},
         }
         for event in ("runtime_status", "heartbeat"):
-            with self.subTest(event=event), self.scope() as logger:
+            with self.subTest(event=event), self.scope(verbose=True) as logger:
                 self.console.seek(0)
                 self.console.truncate()
                 self.emit(logger, "Scan progress", event=event, details=details)
@@ -193,6 +193,23 @@ class LoggingTests(unittest.TestCase):
                 self.assert_human_console()
                 self.assertEqual(self.records()[-1]["details"], details)
         self.assertEqual(details["account"]["equity"], 12345.67891)
+
+    def test_default_runtime_summary_is_one_line_and_jsonl_retains_snapshot(self):
+        details = {"cycle": 3, "status": "waiting", "skipped": {"no_trend_pullback_setup": 5},
+                   "account": {"currency": "USD", "equity": 1234.5678,
+                               "balance": 1200, "open_positions": 1, "remaining_risk": 12.34}}
+        with self.scope() as logger:
+            self.emit(logger, event="heartbeat", details=details)
+            self.emit(logger, event="order_sent", details={"symbol": "ONE"})
+            self.emit(logger, event="order_sent", details={"symbol": "TWO"})
+        text = self.console.getvalue()
+        self.assertIn("Equity: 1,234.57 USD", text)
+        self.assertIn("Remaining risk: 12.34 USD", text)
+        self.assertIn("Skipped: No trend pullback setup: 5", text)
+        self.assertNotIn("Balance:", text)
+        self.assertEqual(self.records()[0]["details"], details)
+        self.assertEqual([record["details"]["symbol"] for record in self.records()[1:]], ["ONE", "TWO"])
+        self.assertEqual(text.splitlines()[0], (self.directory / "bijisatu" / "2026-03-16.log").read_text().splitlines()[0])
 
     def test_generic_nested_details_use_labels_instead_of_object_representations(self):
         details = {
@@ -261,7 +278,7 @@ class LoggingTests(unittest.TestCase):
         self.assertEqual(record["broker_time"], "2026-03-15T21:00:00-04:00")
         self.assertEqual(record["broker_utc_offset_hours"], -4)
 
-    def test_debug_always_in_file_but_console_obeys_verbose(self):
+    def test_debug_only_written_with_verbose(self):
         for verbose in (False, True):
             with self.subTest(verbose=verbose), self.scope(verbose=verbose) as logger:
                 self.console.seek(0)
@@ -270,7 +287,7 @@ class LoggingTests(unittest.TestCase):
                 self.emit(logger, "Visible status")
                 self.assertEqual("Debug analysis" in self.console.getvalue(), verbose)
                 self.assertIn("Visible status", self.console.getvalue())
-        self.assertEqual([record["level"] for record in self.records()], ["DEBUG", "INFO"] * 2)
+        self.assertEqual([record["level"] for record in self.records()], ["INFO", "DEBUG", "INFO"])
 
     def test_utc_daily_rollover_and_existing_days_are_preserved(self):
         archive = self.directory / "bijisatu" / "2000-01-01.jsonl"
@@ -445,7 +462,7 @@ class LoggingTests(unittest.TestCase):
         original = logger.handlers[:]
         with self.assertRaisesRegex(OSError, "close failed"):
             with self.scope() as configured:
-                handler, console = configured.handlers
+                handler, readable, console = configured.handlers
                 stream = handler.stream
                 wrapped = Mock(wraps=stream)
                 wrapped.close.side_effect = OSError("close failed")
@@ -453,6 +470,7 @@ class LoggingTests(unittest.TestCase):
         try:
             self.assertEqual(logger.handlers, original)
             self.assertTrue(console._closed)
+            self.assertTrue(readable._closed)
         finally:
             stream.close()
 

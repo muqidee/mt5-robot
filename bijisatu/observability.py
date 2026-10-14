@@ -8,6 +8,7 @@ import json
 import logging
 import math
 import os
+import textwrap
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from datetime import datetime, timezone, timedelta
@@ -126,6 +127,18 @@ class _StructuredFormatter(logging.Formatter):
 class _ConsoleFormatter(_StructuredFormatter):
     """Render labelled text without changing structured file values."""
 
+    def __init__(self, mode, run_id, offset, verbose=False, show_request_id=False):
+        super().__init__(mode, run_id, offset)
+        self.verbose = verbose
+        self.show_request_id = show_request_id
+
+    @staticmethod
+    def _block(lines: list[str]) -> str:
+        return "\n".join(
+            textwrap.fill(line, width=96, subsequent_indent="    ")
+            for line in lines
+        )
+
     @staticmethod
     def _value(value: object, key: str, currency: str | None) -> str:
         if value is None:
@@ -178,7 +191,57 @@ class _ConsoleFormatter(_StructuredFormatter):
             currency = details.get("currency")
         if not isinstance(currency, str):
             currency = None
+        event = payload["event"]
+        if not self.verbose and event in ("runtime_status", "heartbeat"):
+            skips = "; ".join(
+                f"{name.replace('_', ' ').capitalize()}: {count}"
+                for name, count in details.get("skipped", {}).items()
+            ) or "none"
+            equity = self._value(account.get("equity"), "equity", currency)
+            remaining = self._value(account.get("remaining_risk", details.get("remaining")), "remaining_risk", currency)
+            short_time = payload["timestamp_utc"][:19].replace("T", " ")
+            summary = [
+                f'{short_time} UTC | {payload["level"]} | {payload["mode"]} | '
+                f'{payload["message"]}: {details.get("status")} | Cycle: {details.get("cycle")}',
+                f"  Equity: {equity} | Open positions: {account.get('open_positions', 0)} | Remaining risk: {remaining}",
+                f"  Skipped: {skips}",
+            ]
+            if details.get("reason"):
+                summary.append(f"  Reason: {details['reason']}")
+            return self._block(summary)
+        if not self.verbose and (event.startswith("ollama_") or event.startswith("market_commentary_")):
+            short_time = payload["timestamp_utc"][:19].replace("T", " ")
+            symbol = f" | {details['symbol']}" if details.get("symbol") else ""
+            summary = [f'{short_time} UTC | {payload["level"]}{symbol} | {payload["message"]}']
+            context = []
+            if details.get("model"):
+                context.append(f"Model: {details['model']}")
+            if details.get("entry_timeframe") and details.get("trend_timeframe"):
+                context.append(f"Timeframes: {details['entry_timeframe']}/{details['trend_timeframe']}")
+            if "latency_seconds" in details:
+                context.append(f"Latency: {self._value(details['latency_seconds'], 'latency_seconds', None)} s")
+            if context:
+                summary.append("  " + " | ".join(context))
+            for key in ("decision", "bias"):
+                if key in details:
+                    summary.append(f"  {key.capitalize()}: {str(details[key]).upper()}")
+            if "reason" in details:
+                summary.append(f"  Reason: {details['reason']}")
+            if self.show_request_id and details.get("request_id"):
+                summary.append(f"  Request id: {details['request_id']}")
+            return self._block(summary)
+        if not self.verbose and event == "setup_assessment":
+            failures = "; ".join(side + ": " + ", ".join(checks)
+                                 for side, checks in details.get("failed_conditions", {}).items())
+            trend = details.get("trend_latest") or {}
+            entry = details.get("entry_latest") or {}
+            return (lines[0] + f" | {details.get('symbol')} | {details.get('trend_timeframe')}/{details.get('entry_timeframe')}"
+                    f" | {details.get('reason')} | Failed: {failures or 'none'}"
+                    + (f" | Trend EMA20/50: {trend['ema20']:.6g}/{trend['ema50']:.6g}; close={trend['close']:.6g}" if trend else "")
+                    + (f" | Entry open/close/EMA20: {entry['open']:.6g}/{entry['close']:.6g}/{entry['ema20']:.6g}" if entry else ""))
         for key, value in details.items():
+            if key == "request_id" and not self.show_request_id:
+                continue
             lines.extend(self._lines(key, value, 2, currency))
         return "\n".join(lines)
 
@@ -186,8 +249,9 @@ class _ConsoleFormatter(_StructuredFormatter):
 class _DailyJsonLinesHandler(logging.Handler):
     """Open eagerly and propagate disk errors instead of logging.handleError."""
 
-    def __init__(self, directory: Path):
+    def __init__(self, directory: Path, suffix: str = ".jsonl"):
         super().__init__(logging.DEBUG)
+        self.suffix = suffix
         self.directory = directory / "bijisatu"
         self.stream: TextIO | None = None
         self.day = None
@@ -204,7 +268,7 @@ class _DailyJsonLinesHandler(logging.Handler):
         if self.stream is not None:
             self.stream.close()
             self.stream = None
-        self.stream = (self.directory / f"{day.isoformat()}.jsonl").open(
+        self.stream = (self.directory / f"{day.isoformat()}{self.suffix}").open(
             "a", encoding="utf-8", newline="\n"
         )
         self.day = day
@@ -240,8 +304,10 @@ def configured_logging(
 ) -> Iterator[logging.Logger]:
     """Install isolated robot handlers and restore prior configuration on exit.
 
-    Daily UTC files are always DEBUG, append-only, flushed per line and never
-    deleted. Disk errors propagate, including during setup. Details stay nested;
+    Daily UTC JSONL and readable .log files default to INFO (DEBUG with verbose),
+    append-only, flushed per
+    event and never deleted. Readable files use the console formatter. Disk
+    errors propagate, including during setup. Details stay nested;
     common credential/config keys are redacted and unknown objects omitted as
     null. Account mappings expose only financial metrics. Console details use
     readable labels and currency amounts rounded to two decimal places; file
@@ -254,13 +320,20 @@ def configured_logging(
     formatter = _StructuredFormatter(mode, run_id, broker_utc_offset_hours)
     file_handler = _DailyJsonLinesHandler(log_dir)
     console_handler = logging.StreamHandler()
+    text_handler = None
     logger = logging.getLogger("bijisatu")
     previous = (logger.level, logger.handlers[:], logger.filters[:], logger.propagate, logger.disabled)
     try:
+        text_handler = _DailyJsonLinesHandler(log_dir, suffix=".log")
+        text_handler.setFormatter(_ConsoleFormatter(
+            mode, run_id, broker_utc_offset_hours, verbose=verbose, show_request_id=True
+        ))
         file_handler.setFormatter(formatter)
+        file_handler.setLevel(logging.DEBUG if verbose else logging.INFO)
+        text_handler.setLevel(logging.DEBUG if verbose else logging.INFO)
         console_handler.setLevel(logging.DEBUG if verbose else logging.INFO)
-        console_handler.setFormatter(_ConsoleFormatter(mode, run_id, broker_utc_offset_hours))
-        logger.handlers = [file_handler, console_handler]
+        console_handler.setFormatter(_ConsoleFormatter(mode, run_id, broker_utc_offset_hours, verbose=verbose))
+        logger.handlers = [file_handler, text_handler, console_handler]
         logger.filters = []
         logger.setLevel(logging.DEBUG)
         logger.propagate = False
@@ -276,5 +349,9 @@ def configured_logging(
         try:
             file_handler.close()
         finally:
-            console_handler.close()
+            try:
+                if text_handler is not None:
+                    text_handler.close()
+            finally:
+                console_handler.close()
 

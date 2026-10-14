@@ -1,27 +1,27 @@
 # BijiSatu
 
-An experimental **Python + MetaTrader 5** short-term trading robot for Windows, with selectable intraday and legacy scalping modes. It uses a testable, rule-based strategy with no guarantee of profit. An Exness cent account uses **real money**; it is not automatically a demo account.
+An experimental **Python + MetaTrader 5** short-term trading robot for Windows, with selectable short-term, intraday and legacy scalping modes. It uses a testable, rule-based strategy with no guarantee of profit. An Exness cent account uses **real money**; it is not automatically a demo account.
 
 ## Strategy modes
 
-`strategy_mode: "scalping"` preserves the original M1-entry/M5-trend default for existing configurations. `"intraday"` selects **closed M15 entries with H1 trend**. Slower candles may reduce sensitivity to minute-level noise and spread relative to ATR, but this is a hypothesis to test, not proven profitability or a guarantee of daily profit. No trade is required each day.
+`strategy_mode: "scalping"` preserves the original M1-entry/M5-trend default for existing configurations. `"intraday"` selects **closed M15 entries with H1 trend**. `"short_term"` selects **closed H1 entries with H4 trend** and is the example profile; omitted mode still defaults to scalping. Slower candles may reduce sensitivity to minute-level noise and spread relative to ATR, but this is a hypothesis to test, not proven profitability or a guarantee of daily profit. No trade is required each day.
 
-Both modes reuse the same rules, with no extra indicators:
+All modes reuse the same rules, with no extra indicators:
 
-1. Require at least 100 closed entry candles and 100 trend candles that closed no later than the entry candle's close. Intraday evaluates the latest 100 of each, matching the offline simulation; legacy live scalping retains its existing available history (up to 300), while offline uses 100.
+1. Require at least 100 closed entry candles and 100 trend candles that closed no later than the entry candle's close. Short-term and intraday evaluate the latest 100 of each, matching the offline simulation; legacy live scalping retains its existing available history (up to 300), while offline uses 100.
 2. For a buy, the last three trend closes must be above EMA20, EMA20 above EMA50, and both EMAs rising on each candle. A sell mirrors these conditions.
 3. The previous entry close must be at/below its EMA20 for a buy, followed by a bullish candle closing above its own EMA20. A sell requires the opposite reclaim and a bearish candle.
-4. ATR14 uses Wilder smoothing on the entry timeframe (M15 or M1). Spread, stop distance and sizing use that ATR; signals never use an unfinished H1/M5 candle.
-5. Reject future or stale closed candles: entry close age must be within its duration plus 30 seconds, trend within its duration plus 90 seconds. Thus intraday limits are 930/3690 seconds and scalping 90/390 seconds. Quotes still have the separate 15-second default limit. Recheck entry signal and trend age before claiming an attempt; saved bar timestamps prevent duplicates and cooldown remains per symbol across restarts/mode changes.
+4. ATR14 uses Wilder smoothing on the entry timeframe (H1, M15 or M1). Spread, stop distance and sizing use that ATR; signals never use an unfinished H4/H1/M5 candle.
+5. Reject future or stale closed candles: entry close age must be within its duration plus 30 seconds, trend within its duration plus 90 seconds. Thus short-term limits are 3630/14490 seconds, intraday 930/3690 seconds and scalping 90/390 seconds. Quotes still have the separate 15-second default limit. Recheck entry signal and trend age before claiming an attempt; saved bar timestamps prevent duplicates and cooldown remains per symbol across restarts/mode changes.
 
-Intraday describes the entry horizon, **not a forced same-day exit**. Positions remain until server SL/TP; no end-of-day liquidation or maximum holding-time rule is implemented. Consider overnight gaps and swap in research.
+Short-term and intraday describe the entry horizon, **not a forced same-day exit**. Positions remain until server SL/TP; no end-of-day liquidation or maximum holding-time rule is implemented. Consider overnight gaps and swap in research.
 
 ### Execution and risk controls
 
 - EMA20/EMA50 trend filter, EMA20 pullback/reclaim entries, and ATR14. Signals use closed candles only.
 - Initial stop loss at 1.5 × ATR, widened where required by broker limits and spread. Take profit targets 1.5 × the actual stop distance. No martingale, grid, averaging down, or trade-count targets.
 - Discovers major-currency Forex pairs and gold from broker metadata, including broker suffixes. Scans up to 20 symbols by default, with one variant per pair. Set `symbols` to restrict trading to instruments you have tested.
-- Ranks valid setups by spread/ATR, with a maximum spread of 15% of ATR. The compatibility default permits two positions and a five-minute per-symbol cooldown; the local intraday profile permits up to ten with a fifteen-minute cooldown. One position per symbol remains enforced.
+- Ranks valid setups by spread/ATR, with a maximum spread of 15% of ATR. The compatibility default permits two positions and a five-minute per-symbol cooldown; the user-owned local profile permits up to ten with a fifteen-minute cooldown. One position per symbol remains enforced.
 - Sizes positions using MT5 profit/loss calculations in **account currency**, broker volume limits, remaining daily risk, estimated commission, deviation, and a 15% buffer. It does not assume cent-account lots are equivalent to USD-account lots.
 - **Observation only (`dry-run`) by default**: no orders, virtual positions, or simulated profits. Use `backtest` for offline simulation.
 - Profitability has not been validated against Exness data or broker forward tests. This is not a high-frequency trading system.
@@ -37,7 +37,7 @@ The entry filter is **disabled by default** and must be explicitly selected sepa
 }
 ```
 
-Do not enable the filter in a running trading setup until offline mocked filter tests **and a synthetic, real structured response through the exact production client** pass. A healthy service or installed model alone is insufficient. Current CPU Qwen validation timed out at 30 seconds; local observation remains unchanged and filter activation is blocked. No MT5 connection, order, model download or live restart is part of this validation.
+Do not enable the filter in a running trading setup until offline mocked filter tests **and a synthetic, real structured response through the exact production client** pass. A healthy service or installed model alone is insufficient. An earlier CPU-only validation timed out at 30 seconds; that historical result did not verify a usable filter response. The currently selected local filter setting is preserved, not activated or restarted by these documentation changes. No MT5 connection, order, model download or live restart is part of this validation.
 
 A valid strategy setup **AND** an exact Qwen `allow` are required. Qwen is veto-only: it cannot invent trades, change lot size, SL/TP, risk limits or execution settings. `skip`, pending, timeout, malformed response, service failure, full queue, absent client or expired verdict means **no new order**. Filter mode applies equally to dry-run plans and execution, but dry-run still never sends orders.
 
@@ -53,7 +53,7 @@ Startup reports mode `off`, `observe` or `filter`. Filter events are `ollama_fil
 
 Ollama commentary is **disabled by default** and independent of `--execute`. Opting in does not authorize orders or change dry-run behavior. Qwen judgements never filter a signal, alter exposure/risk, write order claims, or send/modify orders. Existing pre-entry exposure and freshness checks remain authoritative. Profit benefits are **unproven**; no live performance improvement is claimed.
 
-The ignored `config.local.json` opts in with these settings only; existing account, symbols and risk settings are preserved:
+The following is an optional legacy signal-observer example, not the current ignored local configuration. The current local observer remains disabled; per-candle market commentary is a separate setting:
 
 ```json
 {
@@ -68,7 +68,7 @@ The ignored `config.local.json` opts in with these settings only; existing accou
 
 The example/schema defaults use the same values except `ollama_observation_enabled: false`. Settings load only at startup; no process or terminal was started/restarted for this integration. The endpoint must be an HTTP origin using `localhost` or a literal loopback address (including `[::1]`), optional valid port, and no credentials, API path, query or fragment. `localhost` connects directly to `127.0.0.1`; no DNS, environment proxies or redirects are used. The model must already be installed; the client does not download it.
 
-One background worker posts `/api/chat` with `stream: false`, `think: false`, a JSON response schema, temperature 0, fixed seed and a modest fixed preset (`num_predict: 64`, `num_ctx: 2048`). Qwen versions must support these options; unsupported requests only produce an observation error. Each request contains symbol, side, entry-bar open timestamp, timeframe minutes, ATR, price spread, verified EMA trend/pullback context, and at most six closed OHLC candles per timeframe. Trend candles close no later than the entry cutoff. No account identifiers, credentials, equity, lot sizing, repository files, configuration or persistent state are sent. No tools or execution authority are provided.
+One background worker posts `/api/chat` with `stream: false`, `think: false`, a JSON response schema, temperature 0, fixed seed and a bounded fixed preset (`num_predict: 128`, `num_ctx: 2048`, `num_thread: 4`). Qwen versions must support these options; unsupported requests only produce an observation error. Each request contains symbol, side, entry-bar open timestamp, timeframe minutes, ATR, price spread, verified EMA trend/pullback context, and at most six closed OHLC candles per timeframe. Trend candles close no later than the entry cutoff. No account identifiers, credentials, equity, lot sizing, repository files, configuration or persistent state are sent. No tools or execution authority are provided.
 
 The configured queue holds at most four pending snapshots by default plus one in flight. Submission never waits for inference: queue saturation, timeouts, service outages, malformed replies and model `skip` decisions do not suppress valid orders or modify their plans. A process-local per-symbol bar watermark prevents repeated requests for the same or older signal, including failed/saturated observations; it is not a durable trading claim and resets on restart. Symbol tracking is capped at 1,024 without eviction; excess symbols only log unavailable. Signals are observed during scanning before spread/entry sizing, so a judgement does not imply an order was placed or even eligible. Account-wide blocks and cooldowns may prevent a symbol from reaching evaluation.
 
@@ -82,17 +82,76 @@ Structured events in the existing daily logs:
 
 Response bodies are capped at 8 KiB, headers/transport reads are bounded, and judgement keys/types/enums are strictly checked; duplicate keys, nonfinite numbers, tool calls and control characters are rejected. Shutdown cancels pending snapshots, waits at most the request deadline plus 0.2 seconds for the single worker, and disables its logging before logging handlers close. It never waits for the whole queue. A one-cycle run may cancel pending observations rather than report every queued result.
 
-CPU inference and model warmup can exceed the default 10-second total request deadline (allowed 0.1–30 seconds). An independent local synthetic `/api/chat` check with `qwen3:4b`, thinking/streaming disabled, temperature 0, `num_predict: 96` and `num_ctx: 2048` timed out after 90.05 seconds; the data were entirely invented, with no market/account data. A second warm-model request with only a minimal invented JSON instruction, `think: false`, `num_predict: 48` and `num_ctx: 2048` also timed out at 30 seconds. `/api/ps` reported `qwen3:4b` loaded with Q4_K_M quantization, context 2048 and `size_vram: 0` (CPU); `/api/version` remained responsive and reported version `0.40.0`. These checks establish service reachability and model loading only: **no usable model judgement has been verified**. Automated integration tests use mocked HTTP/inference, not successful live generation. Repeated expensive synthetic generation calls were not pursued. The smaller 64-token preset is a bound, not a verified speed improvement; truncated/malformed replies are rejected. The observation timeout is not increased to accommodate this measurement. Queue saturation and timeouts are expected with observation enabled; scanning and order calculations never wait for inference, and logs can arrive after scanning or an order event. This observation path does not establish an entry-time performance benefit, trading accuracy or profitability.
+Historical CPU-only inference and model warmup can exceed the unchanged default 10-second total deadline (allowed 0.1–30 seconds). Requests retain the bounded CPU-thread preset `num_thread: 4`, `num_ctx: 2048`, `num_predict: 128`, deterministic sampling, no thinking and no streaming. An independent synthetic local check returned complete parseable commentary JSON in approximately 3.4 seconds with four CPU threads; earlier default-thread checks timed out at 30/90 seconds. A 32-token synthetic check produced truncated invalid JSON, so that reduced preset was not adopted. A later exact-client truncation at the original 64-token limit is addressed by the bounded 128-token preset described below. These checks used invented data and establish neither realistic prompt latency nor market accuracy. Real candle prompts may still time out or yield invalid/nonsensical text. No model response or profit is guaranteed; automated tests use mocked transport only.
+
+### GPU deployment and container memory cap
+
+GPU activation was independently requested after the historical CPU-only measurements above. `nvidia-smi` inside the container verified the NVIDIA RTX 5070 Ti Laptop GPU with approximately 12 GB VRAM (host report: 12,227 MiB, driver 610.74). After the first synthetic GPU request timed out at 30 seconds, `/api/ps` reported `qwen3:4b` fully GPU-resident: `size=2874062929`, `size_vram=2874062929`, context 2048. The CUDA0 KV cache was reported as 288 MiB. **Offload is verified; this first cold request did not produce a usable response.** Service health, model residency and a complete schema-valid production-client reply are distinct checks.
+
+The explicitly selected container RAM hard cap is **6 GiB**, below 40% of Docker's reported 15.34 GiB. Deployment settings are `mem_limit: 6g` and `memswap_limit: 6g`, with no additional swap allowance; effective HostConfig `Memory` and `MemorySwap` were verified after restart, both `6442450944` bytes. A point-in-time memory sample was 4.702 GiB of the 6 GiB limit, not a maximum-use guarantee. This is a limit on this container's host RAM, not global Windows/Docker RAM and not GPU VRAM. It cannot guarantee that a BSOD will not occur. Exceeding the cap can trigger an out-of-memory kill of the model/container and failed requests; filters remain fail-closed.
+
+Service defaults are `OLLAMA_CONTEXT_LENGTH=4096`, `OLLAMA_NUM_PARALLEL=1` and `OLLAMA_MAX_LOADED_MODELS=1`. These defaults reduce concurrent load but do not prevent clients from requesting a larger context. An explicit 64,000-token request still risks OOM. A concurrent JetBrains client was observed at context 64,000, approximately 11.73 GB memory and 1,807% CPU; it may contend for resources and is not a benchmark of the bounded robot request. Prefer JetBrains context **4096–8192**, starting at 4096 under this cap; larger contexts and even these suggested values require memory monitoring. The robot keeps its explicit `num_ctx: 2048`, 10-second request deadline and 30-second filter approval lifetime.
+
+Container configuration/restart and synthetic GPU verification are handled separately. The Windows trading robot is **not restarted** by that operation. No live-market request, order or market-accuracy claim is part of synthetic verification. GPU residency or a faster synthetic response does not establish market accuracy, reliable trading latency or profitability.
+
+### Newer-model synthetic validation before the authorized switch
+
+The separately authorized `qwen3.5:4b` download completed (approximately 3.324 GB persisted in the model volume). `/api/ps` reported full GPU residency with `size=size_vram=3060803828` bytes (approximately 2.85 GiB). An independent generic-schema synthetic check completed cold in 49.77 seconds and warm in 0.63 seconds, with parseable bias/reason JSON. Those generic-schema results do not validate the robot's distinct filter schema, and the cold latency exceeds the robot's unchanged deadline.
+
+Initially, exactly one commentary request and one filter request were tested through the actual production `OllamaClient` against `qwen3.5:4b`, using only invented 100-bar H1/H4 OHLC histories, a synthetic symbol and a synthetic strategy signal. No broker, account, repository contents, private state, engine or order path was used. Options remained context 2048, prediction limit 64, CPU-thread preset 4, no thinking/streaming, and the **10-second** request deadline.
+
+| Exact production-client test | Result | Measured latency | Required response schema |
+| --- | --- | --- | --- |
+| Market commentary | Validated `bias=buy` and bounded plain-text reason | 1.250 seconds | Exactly `bias` (`buy`, `sell`, `neutral`) and `reason` (1–160 printable characters) |
+| Entry filter | Rejected with `JSONDecodeError`; no validated decision or approval | 1.250 seconds | Exactly `decision` (`allow`, `skip`) and `reason` (1–160 printable characters) |
+
+There were no retries, raw response/chain-of-thought logs, broker connections or orders. Parseable commentary may still contain inaccurate or nonsensical statements; these tests establish no market accuracy, profitability or reliable future latency. **This initial exact filter validation did not pass; the follow-up below resolves the formatting issue without accepting malformed responses.** At that validation stage, the local robot model remained `qwen3:4b` and the robot was not restarted. The subsequent user-authorized selection is documented below. Neither a generic synthetic response nor commentary bias can authorize a trade or substitute for the independent filter approval.
+
+### Bounded generation reliability follow-up
+
+A synthetic-only diagnostic of the original filter request confirmed `done=true`, `done_reason=length`, `eval_count=64`, and 197 content characters without a closing JSON object. Only safe envelope metadata/lengths were inspected, not raw output or chain-of-thought. The 64-token generation budget truncated the structured response; relaxing enums or parsing partial JSON is not a fix.
+
+The production budget is now **128 tokens**; 256 was not needed. All modes request a concise reason under 120 characters, while the unchanged strict schema allows 1–160 printable characters and no extra keys. Requests with `done_reason=length` are explicitly rejected even if their prefix looks like valid JSON. INFO failures explain truncation without echoing the response. Context 2048, four CPU threads, 10-second deadline, 30-second filter approval lifetime, model choice, queue/resource bounds and order/risk controls are unchanged.
+
+The filter snapshot now supplies measured EMA20/50 alignment/slopes and pullback/reclaim diagnostics from the same strategy history window, rather than relying solely on six OHLC candles or an assumed trend side. Its prompt clarifies that the preceding opposite/pullback candle is expected, not itself a direction conflict. These facts are market data, not automatic approval: a fresh exact model `allow`, valid strategy and risk checks are still required. The additional factual context is included in the existing canonical snapshot digest, so an approval cannot bind to a different snapshot. Validated but conservative `skip` results from earlier synthetic samples were not converted to approval.
+
+The final actual-client tests used invented 400-bar H1 data aggregated into 100 coherent H4 candles, with a strategy-verified buy pullback/reclaim; the conflicting-side case supplied sell against that measured buy trend. No engine, broker, private data or orders were used.
+
+| Final exact-client test (`qwen3.5:4b`, 128-token limit) | Validated result | Latency | Schema |
+| --- | --- | --- | --- |
+| Strategy-aligned synthetic filter case | `decision=allow` | 1.391 seconds | Exactly `decision`, `reason` |
+| Conflicting-side synthetic filter case | `decision=skip` | 1.125 seconds | Exactly `decision`, `reason` |
+| Synthetic market commentary | `bias=buy` | 0.531 seconds | Exactly `bias`, `reason` |
+
+All three completed within 10 seconds and passed the unchanged enums, bounded printable reason and strict envelope/model validation. Mocked regression tests still reject truncated replies, including a complete-looking JSON body marked generation-length exhausted, and assert the 128-token request preset. These observations do not establish correctness on real markets, future latency, a win rate or profitability. The local model remained `qwen3:4b` throughout these tests; no automatic model switch or robot restart was performed. The subsequent explicit selection of `qwen3.5:4b` does not change these historical test results.
+
+### Current model selection and compatibility defaults
+
+After the synthetic verification, the user explicitly selected **`qwen3.5:4b`**. The ignored local configuration now sets `ollama_observation_model="qwen3.5:4b"`; the Compose model initializer also uses **`qwen3.5:4b`** as its `OLLAMA_MODEL` fallback. Initialization checks the selected model and downloads it into the persistent model volume only when missing. An explicit `OLLAMA_MODEL` environment value overrides the Compose fallback.
+
+Python `Config`, `config.schema.json` and `config.example.json` retain the original **`qwen3:4b`** library defaults for backward compatibility. These are distinct from the Compose initialization default and the current ignored local selection. Set `ollama_observation_model` to `"qwen3.5:4b"` in the robot configuration to match the default Compose download; the runtime does not infer its model from Compose, rewrite configuration or download models. The original `qwen3:4b` remains supported and can be pulled manually or selected through the Compose initialization override.
+
+The model setting is read at robot startup. Updating local configuration does not change an already running process; any robot restart is a separate operation and was not performed for this documentation update. The chosen model is not a guarantee of valid future responses, market accuracy or profit. Filter/observer/commentary flags, risk settings and persistent state are unaffected by model selection.
+
+### Per-closed-candle market commentary
+
+`market_commentary_enabled` defaults to **false**, independently of `ollama_filter_enabled` and `ollama_observation_enabled`. When enabled, startup processes the latest completed entry candle and each subsequent new candle (H1 with H4 context in `short_term`). Validated, warmed-up market-only snapshots include factual EMA20/50 slopes/alignment, ATR14, OHLC and failed strategy conditions. There is no fabricated executable signal, account identity, equity, credentials, sizing or order data. Symbols with existing positions are included after safe exposure checks, even if the position/risk budget prevents new entries. Halts, pending orders and failed exposure checks may prevent commentary; they are never weakened for commentary.
+
+The separate response is exactly `{"bias":"buy|sell|neutral","reason":"short plain text"}`. This is **discussion, never authorization**: a buy bias cannot produce an order. Strategy, risk and the exact fresh entry-filter approval remain required when the filter is enabled. Commentary errors/neutral bias cannot veto an otherwise approved strategy.
+
+At most one request is attempted per symbol/entry candle/strategy mode per process, including startup. Queue-full, timeout and invalid responses consume that candle without polling retries. A restart may revisit the latest candle. Queues and symbol watermarks are bounded. Commentary reserves a startup batch slot per configured symbol, using `min(32, max(queue_capacity, max_symbols))` pending slots; the filter/legacy observer keep the configured queue capacity. This prevents a five-symbol batch from systematically dropping its last symbol before the worker is scheduled. Symbol watermarks are capped by `max_symbols`. With the filter enabled, commentary uses the existing filter worker: queued filter requests take priority, and only one model request runs at a time. An already running commentary may delay a newly arriving filter request by at most its existing deadline; filter approvals still expire after 30 seconds. Commentary jobs waiting more than 30 seconds are discarded. No inference/network polling is added to the engine. Shutdown cancels queued jobs; `--once` may exit before queued commentary runs.
+
+INFO `ollama_request_started` is emitted at the actual HTTP send, not submission. Correlated results include validated bias/reason and latency; failures explain timeout/model/schema rejection without raw response or chain-of-thought. Daily `.jsonl` retains structured context; console and `.log` show compact, wrapped request/result blocks. Request IDs are retained in files, not shown on the console. `setup_assessment` records human-readable failed H4 alignment/slopes/closes or H1 pullback/reclaim/direction once per entry bar, with finite EMA and last-candle context. Existing `no_trend_pullback_setup` summary codes are retained.
 
 ## Risk settings
 
 The compatibility defaults remain **up to 3% of equity per entry and a 5% daily loss limit**. These are aggressive limits, not risk targets to exhaust. The example JSON intentionally retains these defaults.
 
-The ignored local configuration has been changed to a **research/test profile**, not approved live settings: `strategy_mode="intraday"`, `risk_fraction=0.01` (1% per entry), `max_open_risk_fraction=0.05` (5% of current equity combined open risk), `max_positions=10`, `daily_loss_fraction=0.05` (5% of the saved daily baseline), `cooldown_seconds=900`, `max_spread_atr=0.15`, `stop_atr=1.5`, `reward_ratio=1.5`. Other account, broker, symbol, commission and persistence settings are unchanged. No running process was restarted and no terminal connection or orders were made as part of this change. Configuration is read only at startup; a running instance still uses its old settings.
+An earlier ignored local configuration used a **research/test profile**, not approved live settings: `strategy_mode="intraday"`, `risk_fraction=0.01` (1% per entry), `max_open_risk_fraction=0.05` (5% of current equity combined open risk), `max_positions=10`, `daily_loss_fraction=0.05` (5% of the saved daily baseline), `cooldown_seconds=900`, `max_spread_atr=0.15`, `stop_atr=1.5`, `reward_ratio=1.5`. Other account, broker, symbol, commission and persistence settings are unchanged. No running process was restarted and no terminal connection or orders were made as part of this change. Configuration is read only at startup; a running instance still uses its old settings.
 
 Changing mode/risk must **never** delete/reset state to bypass a daily halt. The configured daily threshold is applied against the existing saved baseline on the next scan after settings are loaded; previously latched halts remain latched. Stops on existing positions are not modified. Test out-of-sample with realistic spread, adverse slippage and account-currency commission before any demo forward evaluation. Neither wider ATR stops nor reduced risk establish a profitable edge.
 
-The local **5% daily loss protection is a chosen safeguard**, not an additional user-selected portfolio target. It replaces the earlier 2% test setting so that a hidden 2% daily allocation does not defeat the requested 5% open-risk ceiling. Daily limits still take priority when losses consume the day's budget.
+That earlier local **5% daily loss protection was a chosen safeguard**, not an additional user-selected portfolio target. It replaces the earlier 2% test setting so that a hidden 2% daily allocation does not defeat the requested 5% open-risk ceiling. Daily limits still take priority when losses consume the day's budget.
 
 The engine sends at most **one order per scan**, not one transaction overall or per day. Other qualifying symbols can enter on subsequent scans after exposure is refreshed; there are no simultaneous/batch sends. Up to ten positions is a hard upper bound, not a target or a count derived simply from account size. Their affordable number depends on current equity, lot minimums, stop distances, costs and existing exposure; with five full 1%-risk entries the 5% ceiling may already be exhausted. Smaller entries or reduced reserved exposure can allow more, still never exceeding ten or one per symbol.
 
@@ -157,7 +216,7 @@ Keep configuration as standard JSON: do not add `//` comments, comment keys, or 
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `strategy_mode` | `"scalping"` | `scalping`: M1 entry/M5 trend; `intraday`: M15 entry/H1 trend. No guaranteed daily profit or same-day exit. |
+| `strategy_mode` | `scalping` (omitted default; example: `short_term`) | `scalping`: M1/M5; `intraday`: M15/H1; `short_term`: H1/H4. Closed EMA trend/pullback rules; no daily exit guarantee. |
 | `symbols` | `[]` | Exact broker names to scan. Empty enables metadata-based discovery. A selected list makes the tested instruments explicit. |
 | `max_symbols` | `20` | Scan-list limit, also applied to explicit symbol lists. Not a number of required trades. |
 | `poll_seconds` | `5` | Sleep after each scan; processing adds to the actual interval. Not a timeframe or trade-frequency target. |
@@ -182,14 +241,15 @@ For example, a 0.8-pip spread with 1.6-pip ATR produces a ratio of `0.50`. A `ma
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `state_dir` | `"state"` | Durable baselines, daily halt flags and previous attempts. Do not remove or relocate it to reset limits. |
-| `log_dir` | `"logs"` | Daily JSONL base directory. Files are saved under `bijisatu/` and are not automatically deleted. |
+| `log_dir` | `"logs"` | Daily INFO JSONL/readable .log directory under `bijisatu/`; DEBUG/full detail requires --verbose. UTC append-only, no automatic deletion. |
 | `heartbeat_seconds` | `60` | Repeats unchanged status approximately once per minute, checked after scans. Does not alter trading rules. |
+| `market_commentary_enabled` | `false` | Describe every new completed entry candle (and latest at startup), including safely checked held symbols; never grants entry approval. Shared bounded worker prioritizes the independent filter. |
 | `ollama_filter_enabled` | `false` | Opt in to fail-closed strategy AND exact fresh Qwen approval. Mutually exclusive with observation; never grants execute permission. Validate synthetic production responses before activation. |
 | `ollama_observation_enabled` | `false` | Opt in to local asynchronous commentary only. Never filters entries or authorizes orders; independent of execute/dry-run. Cannot be true with filter enabled. |
 | `ollama_observation_endpoint` | `"http://127.0.0.1:11435"` | Loopback HTTP origin only; no credentials, path, query, fragment, DNS, proxies or redirects. `/api/chat` is appended internally. |
-| `ollama_observation_model` | `"qwen3:4b"` | Installed local model; 1–128 characters matching letters/digits then letters/digits/dot/underscore/colon/slash/hyphen. No automatic download. |
+| `ollama_observation_model` | `"qwen3:4b"` | Backward-compatible library default; Compose/local selection now uses `qwen3.5:4b`, so set this key explicitly to match. Installed local model; 1–128 characters matching letters/digits then letters/digits/dot/underscore/colon/slash/hyphen. No automatic download. |
 | `ollama_observation_timeout_seconds` | `10.0` | Shared total request deadline, 0.1–30 seconds. CPU latency may exceed it: observation only logs failures; filter blocks entries. Filter approval expires 30 seconds from enqueue. |
-| `ollama_observation_queue_capacity` | `4` | Pending snapshot cap, integer 1–32, plus one active request. Full queues log unavailable without blocking or retrying that signal. |
+| `ollama_observation_queue_capacity` | `4` | Filter/legacy observer pending cap, integer 1–32, plus one active request. Commentary reserves max(queue capacity, max_symbols) slots capped at 32 for startup batches. Full queues do not block or retry that candle. |
 
 Relative directory paths use the process working directory; the launcher sets it to the repository root. If directories are customized, update Git exclusions too. These descriptions do not change configured values, trading permissions, or risk limits. Gaps and slippage can still exceed calculated loss thresholds.
 
@@ -235,7 +295,7 @@ Without `--execute`, no orders are sent. Use `--verbose` to inspect skipped symb
 
 ## Logs and market sessions
 
-The terminal uses readable headings and labelled details, not JSON. Every header includes UTC time, the execution mode, and all currently active session labels. Status reports show equity, balance, daily loss, remaining risk, open positions, and skipped-entry reasons. A heartbeat is printed every 60 seconds even when the status has not changed.
+The terminal and daily `.log` use compact, wrapped runtime/heartbeat blocks: a status header, one financial summary and readable skip counts. Request/reply blocks place model/timeframes/latency together, followed by a separate decision or bias and a wrapped reason. Default blocks wrap at 96 columns and omit microseconds and raw candle timestamps. The console hides request IDs, including with `--verbose`; full IDs remain in `.log` and JSONL for correlation. Generic detailed headers include UTC, mode and session labels. State/reason/skip changes are immediate; equity, quote and remaining-budget fluctuations alone do not create status events. Full account snapshots remain in structured JSONL at status/heartbeat events. The default heartbeat is 60 seconds (approximately one event per minute while stable), plus new-bar assessments, request/result and distinct transaction/error events. Frequency depends on actual state changes and scans; there is no fixed daily byte estimate. Every claim and sent order has a distinct INFO event, even when the runtime status is unchanged.
 
 Use `--verbose` to show per-symbol diagnostics in the terminal, including bid/ask, spread in points, tick age and its limits, candle counts and ages, signal candidates, cooldowns, and rejected entries. Stale quotes and future timestamps have separate explanations. A missing trend/pullback setup is not a connection error.
 
@@ -263,7 +323,7 @@ The example is illustrative, not a performance report. Terminal timestamps now e
 
 ### Daily files
 
-Detailed records are written automatically to `logs/bijisatu/YYYY-MM-DD.jsonl`, using the **UTC date**. Each line is a JSON object for later analysis; JSON is used in the file only, not the terminal. Debug-level diagnostics are saved even without `--verbose`.
+Detailed records are written automatically to `logs/bijisatu/YYYY-MM-DD.jsonl`, using the **UTC date**. Each line is a JSON object for later analysis; JSON is used in the file only, not the terminal. Default disk level is INFO. Debug-level per-scan diagnostics and full readable blocks require `--verbose`; this can quickly fill logs. The daily readable `.log` uses the same compact blocks as the console, with request IDs added for correlation.
 
 - Files are append-only across restarts, rotate at UTC midnight, and are flushed after each record.
 - **No automatic deletion.** Monitor disk usage and archive old files manually when appropriate.
@@ -319,7 +379,7 @@ Press Ctrl+C to stop the robot. Removing the environment variable in another she
 
 ## Offline CSV backtesting
 
-Provide **M1 bid OHLC** candles with the CSV header `time,open,high,low,close`. Use UNIX seconds in UTC or ISO8601 timestamps with an explicit timezone. Timestamps must fall on minute boundaries, be unique, and increase strictly. The selected entry/trend candles are built only from complete, contiguous, UTC-boundary-aligned M1 groups (1/5 minutes scalping, 15/60 minutes intraday). Missing minutes invalidate their group, and incomplete higher-timeframe candles do not count toward warmup. Intraday needs at least 100 complete H1 candles (6,000 contiguous M1 rows when aligned), not merely 100 M1 rows. Market data is not downloaded automatically.
+Provide **M1 bid OHLC** candles with the CSV header `time,open,high,low,close`. Use UNIX seconds in UTC or ISO8601 timestamps with an explicit timezone. Timestamps must fall on minute boundaries, be unique, and increase strictly. The selected entry/trend candles are built only from complete, contiguous, fixed broker-local boundary-aligned M1 groups (1/5 minutes scalping, 15/60 minutes intraday, 60/240 minutes short-term). The configured fixed UTC offset aligns higher-timeframe closes; no DST schedule is inferred. Missing minutes invalidate their group, and incomplete higher-timeframe candles do not count toward warmup. Intraday needs at least 100 complete H1 candles (6,000 contiguous M1 rows when aligned); short-term needs 100 complete H4 candles (24,000 contiguous M1 rows), not merely 100 M1 rows. Market data is not downloaded automatically.
 
 Example data format, not a dataset for evaluating profitability:
 
@@ -360,3 +420,36 @@ Tests do not require a terminal connection and never send orders.
 
 CI runs offline tests on Windows only for pull requests targeting `main`, the default branch. Pushes do not trigger the workflow. Local configuration, state, logs, market data, and reports are excluded from commits. Never store trading passwords or tokens in this repository.
 
+
+## H4 trend / H1 entry research and diagnostics
+
+Select `"strategy_mode": "short_term"` to compare slower timeframes without changing the rules or risk. At least **100 closed H4 bars** (400 candle-hours; more calendar time across market closures) and 100 H1 bars are required. Trend bars closing after the H1 close are excluded even from warmup. This implements the existing EMA trend and EMA20 pullback/reclaim, **not breakout/retest or reversal**. No score, confidence probability or 5/10/15% risk tiers are implemented.
+
+The local user-selected fixed risk remains **15% per entry** (`risk_fraction: 0.15`), with existing daily/open-risk caps unchanged. This is high: a stop can lose roughly 15% before further losses from gaps/costs; budgets, lot rounding and the configured buffer can reduce actual sizing. Limits do not guarantee a maximum loss. A wider H1 ATR stop generally means a **smaller lot at the same risk**, not automatically larger profit. Trades can remain open overnight or for days until SL/TP; there is no daily profit guarantee or forced daily exit.
+
+`strategy_assessment` DEBUG events show selected timeframe labels, required/available closed history, excluded future bars, ATR14, three trend closes and EMA20/50 values/slopes, previous/current entry close versus EMA20, alignment and directional-candle checks. `rejected_reasons` distinguishes `no_trend`, `no_pullback`, `no_reclaim`, `no_directional_candle`, insufficient history or invalid candles. The legacy scan summary still uses `no_trend_pullback_setup`. Full per-scan details require `--verbose` on both daily files and console; default INFO records compact `setup_assessment` once per bar without changing entry rules.
+
+Readable runtime files are appended at `logs\bijisatu\YYYY-MM-DD.log`, beside existing `YYYY-MM-DD.jsonl`, rotated by UTC date. The readable file uses the same labelled blocks as the console, but retains request IDs that the console hides. In both observation and filter mode, **actual HTTP sends**, not queue submissions, emit INFO `ollama_request_started`; validated responses emit `ollama_request_result` with decision, short reason and latency; timeout/connection/invalid responses emit `ollama_request_failed`. All share a request ID, model, local endpoint, symbol/side, closed candle/mode/timeframes, bounded latest market candles and rule context. These events appear on console **without `--verbose`**. No account identity, equity, credentials, raw replies or reasoning traces are included in model request events or prompts.
+
+Illustrative log labels (not an actual model verdict or market result):
+
+```text
+Ollama request started
+  Request id: <same-id>
+  Strategy mode: short_term
+  Entry timeframe: H1
+  Trend timeframe: H4
+Ollama request result
+  Request id: <same-id>
+  Decision: allow
+  Reason: <validated short reason>
+  Latency seconds: <elapsed>
+Ollama request failed
+  Request id: <same-id>
+  Reason: Request timed out; no validated reply
+
+```
+
+Config-aware offline backtesting aggregates complete contiguous M1 CSV groups into H1/H4, uses the latest 100 bars of each and the configured stop/reward/spread/cooldown/risk settings. It remains deterministic and does not call Qwen. No real exported historical dataset is currently available here: synthetic offline tests verify behavior only, **not win rate, profitability or live results**. Configuration changes do not alter a running process or reset saved halts/positions; apply a reviewed profile only at a separately authorized startup.
+
+This follow-up changes only the ignored local `market_commentary_enabled` field to true after offline tests. The already selected short-term H1/H4 profile, enabled entry filter, disabled signal observer, 15% risk settings, symbols and state are preserved. The running process is not restarted by this change.

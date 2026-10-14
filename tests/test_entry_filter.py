@@ -146,7 +146,7 @@ class FilterWorkerTests(unittest.TestCase):
         schema = json.loads((root / "config.schema.json").read_text(encoding="utf-8"))
         example = json.loads((root / "config.example.json").read_text(encoding="utf-8"))
         defaults = json.loads(json.dumps(asdict(Config())))
-        self.assertEqual(example, defaults)
+        self.assertEqual(example, defaults | {"strategy_mode": "short_term"})
         self.assertEqual(set(schema["properties"]), set(defaults))
         for name, value in defaults.items():
             self.assertEqual(schema["properties"][name].get("default"), value, name)

@@ -9,10 +9,11 @@
       "type": "string",
       "enum": [
         "scalping",
-        "intraday"
+        "intraday",
+        "short_term"
       ],
       "default": "scalping",
-      "description": "Memilih strategi tren/pullback EMA dengan candle yang sudah ditutup. scalping memakai entry M1 dan tren M5; intraday memakai entry M15 dan tren H1. ATR14 dihitung pada timeframe entry. Intraday perlu diuji, bukan jaminan profit harian atau posisi selesai pada hari yang sama. Mengganti mode tidak menghapus penghentian harian maupun riwayat percobaan entry."
+      "description": "Memilih strategi tren/pullback EMA dengan candle yang sudah ditutup. scalping memakai entry M1 dan tren M5; intraday memakai entry M15 dan tren H1; short_term memakai entry H1 dan tren H4 dengan minimal 100 candle H4 tertutup (sekitar 400 jam candle). ATR14 dihitung pada timeframe entry. Mode lebih lambat perlu diuji, bukan jaminan profit harian; posisi bisa menginap atau bertahan beberapa hari. Aturan tetap EMA20/50 dan pullback/reclaim EMA20, bukan breakout/retest atau reversal. Mengganti mode tidak menghapus penghentian harian maupun riwayat percobaan entry."
     },
     "max_open_risk_fraction": {
       "type": "number",
@@ -175,7 +176,7 @@
       "minLength": 1,
       "pattern": "\\S",
       "default": "logs",
-      "description": "Folder dasar log JSONL harian, disimpan pada bijisatu/YYYY-MM-DD.jsonl berdasarkan tanggal UTC. Detail DEBUG tetap disimpan tanpa --verbose. Catatan ditambahkan ke file dan tidak dihapus otomatis. Path relatif mengikuti folder kerja. Kecualikan lokasi khusus dari Git dan pantau penggunaan disk."
+      "description": "Folder log harian append berdasarkan UTC, tanpa penghapusan otomatis. File .log dan console ringkas; .jsonl menyimpan detail terstruktur. Bawaan INFO; --verbose mengaktifkan DEBUG dan detail penuh yang dapat cepat memenuhi disk. Status berulang dicatat sesuai heartbeat_seconds, bukan setiap perubahan equity/quote."
     },
     "heartbeat_seconds": {
       "type": "integer",
@@ -212,12 +213,17 @@
       "default": 4,
       "minimum": 1,
       "maximum": 32,
-      "description": "Jumlah maksimal snapshot menunggu, di luar satu permintaan aktif. Satu worker memproses antrean tanpa menahan pemindaian. Jika penuh, unavailable dicatat tanpa mencoba ulang simbol/candle; observasi tidak menyaring order, sedangkan filter memblokir entry tersebut."
+      "description": "Jumlah maksimal snapshot menunggu, di luar satu permintaan aktif. Satu worker memproses antrean tanpa menahan pemindaian. Jika penuh, unavailable dicatat tanpa mencoba ulang simbol/candle; observasi tidak menyaring order, sedangkan filter memblokir entry tersebut. Komentar pasar memakai slot batch awal sebesar nilai terbesar antara kapasitas ini dan max_symbols, dibatasi 32; filter dan observasi sinyal tetap memakai kapasitas ini."
     },
     "ollama_filter_enabled": {
       "type": "boolean",
       "default": false,
       "description": "Mengaktifkan filter entry lokal: sinyal strategi DAN persetujuan Qwen yang valid, cocok persis, dan belum kedaluwarsa wajib tersedia. Bawaan nonaktif; tidak boleh bersamaan dengan ollama_observation_enabled. Pending, skip, timeout, respons tidak valid, antrean penuh, atau layanan gagal memblokir entry baru tanpa menunggu worker. Model tidak mengubah lot, SL/TP, atau risiko; opsi ini bukan izin execute."
+    },
+    "market_commentary_enabled": {
+      "type": "boolean",
+      "default": false,
+      "description": "Mengaktifkan komentar pasar Qwen pada candle entry tertutup terbaru saat mulai dan setiap candle baru, termasuk simbol berposisi bila data pasar dan pemeriksaan risiko aman. Bawaan false; terpisah dari filter entry dan observasi sinyal. Bias buy/sell/neutral dan alasan bukan izin transaksi. Data EMA/ATR/candle tervalidasi saja; tanpa akun, saldo, atau order. Maksimal satu permintaan per simbol/candle/mode per proses, tanpa retry timeout. Antrean terbatas mengutamakan filter entry, timeout tetap mengikuti ollama_observation_timeout_seconds."
     }
   },
   "allOf": [
@@ -239,4 +245,3 @@
     }
   ]
 }
-

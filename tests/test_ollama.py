@@ -46,6 +46,12 @@ class ClientTests(unittest.TestCase):
         connection.close.assert_called_once()
         return result, connection
 
+    def test_token_limit_truncation_rejected_without_echoing_content(self):
+        for content in ('{"decision":"allow","reason":"incomplete',
+                        '{"decision":"allow","reason":"Complete but budget exhausted"}'):
+            with self.subTest(content=content), self.assertRaisesRegex(ValueError, "token limit"):
+                self.call(response(content, extra={"done_reason": "length", "eval_count": 128}))
+
     def test_structured_request_and_no_proxy_or_dns(self):
         with patch.dict("os.environ", {"HTTP_PROXY": "http://external.invalid", "ALL_PROXY": "http://external.invalid"}):
             result, connection = self.call(response())
@@ -55,7 +61,7 @@ class ClientTests(unittest.TestCase):
         body = json.loads(args.kwargs["body"])
         self.assertFalse(body["think"])
         self.assertFalse(body["stream"])
-        self.assertEqual(body["options"], {"temperature": 0, "seed": 0, "num_predict": 64, "num_ctx": 2048})
+        self.assertEqual(body["options"], {"temperature": 0, "seed": 0, "num_predict": 128, "num_ctx": 2048, "num_thread": 4})
         self.assertFalse(body["format"]["additionalProperties"])
         self.assertEqual(json.loads(body["messages"][1]["content"]), {"atr": 0.002})
 
@@ -123,7 +129,7 @@ class ClientTests(unittest.TestCase):
     def test_connection_uses_up_deadline_without_sending_request(self):
         connection = Mock()
         with patch("bijisatu.ollama.http.client.HTTPConnection", return_value=connection), \
-                patch("bijisatu.ollama.time.monotonic", side_effect=[100, 100.6]):
+                patch("bijisatu.ollama.time.monotonic", side_effect=[100, 100.6, 100.6]):
             with self.assertRaises(TimeoutError):
                 OllamaClient("http://127.0.0.1:11435", "qwen3:4b", 0.5).judge({})
         connection.request.assert_not_called()

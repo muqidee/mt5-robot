@@ -29,8 +29,8 @@ class ConfigSchemaTests(unittest.TestCase):
         example = ROOT / "config.example.json"
         data = json.loads(example.read_text(encoding="utf-8"))
         self.assertNotIn("$schema", data)
-        self.assertEqual(data, json.loads(json.dumps(asdict(Config()))))
-        self.assertEqual(asdict(load_config(example)), asdict(Config()) | {"symbols": []})
+        self.assertEqual(data, json.loads(json.dumps(asdict(Config()))) | {"strategy_mode": "short_term"})
+        self.assertEqual(asdict(load_config(example)), asdict(Config()) | {"symbols": [], "strategy_mode": "short_term"})
 
     def test_editor_associates_both_configs_with_the_local_schema(self):
         settings = json.loads((ROOT / ".vscode" / "settings.json").read_text(encoding="utf-8"))

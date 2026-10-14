@@ -13,7 +13,7 @@ from .broker import BrokerError, MT5Broker
 from .config import load_config
 from .engine import Engine
 from .observability import configured_logging
-from .ollama import OllamaEntryFilter, OllamaObserver
+from .ollama import MarketCommentary, OllamaEntryFilter, OllamaObserver
 from .state import StateError, StateStore, exclusive_lock
 
 
@@ -30,7 +30,7 @@ def parser() -> argparse.ArgumentParser:
     backtest = commands.add_parser("backtest", help="Offline M1 CSV simulation (not MT5 Strategy Tester)")
     backtest.add_argument("csv", type=Path)
     backtest.add_argument("--config", type=Path, default=None, help="Use runtime strategy/risk settings; explicit flags override them")
-    backtest.add_argument("--strategy-mode", choices=("scalping", "intraday"), default=None)
+    backtest.add_argument("--strategy-mode", choices=("scalping", "intraday", "short_term"), default=None)
     backtest.add_argument("--stop-atr", type=float, default=None)
     backtest.add_argument("--reward-ratio", type=float, default=None)
     backtest.add_argument("--max-spread-atr", type=float, default=None)
@@ -71,7 +71,11 @@ def _observe(engine, config, log, once: bool) -> int:
     while True:
         result = engine.step(time.time())
         cycle += 1
-        signature = json.dumps(result, sort_keys=True, allow_nan=False)
+        reason = result.get("reason")
+        if isinstance(reason, str) and reason.startswith(("Stale tick:", "Future tick:")):
+            reason = reason.split(":", 1)[0]
+        signature = json.dumps({"status": result.get("status"), "reason": reason,
+                                "skipped": result.get("skipped")}, sort_keys=True, allow_nan=False)
         current = time.monotonic()
         changed = signature != previous
         if changed or current >= heartbeat_due:
@@ -87,14 +91,14 @@ def _observe(engine, config, log, once: bool) -> int:
         time.sleep(config.poll_seconds)
 
 
-def _run_connected(broker, config, args, log, mode: str, observer=None, entry_filter=None) -> int:
+def _run_connected(broker, config, args, log, mode: str, observer=None, entry_filter=None, commentary=None) -> int:
     broker.connect()
     account = broker.account()
     identity = hashlib.sha256(f"{account.login}:{account.server}:{account.currency}".encode()).hexdigest()[:24]
     root = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "BijiSatu" / "locks"
     with exclusive_lock(root / f"{identity}.lock"):
         store = StateStore(Path(config.state_dir) / f"{identity}-{mode}.json")
-        engine = Engine(broker, config, store, args.execute, observer=observer, entry_filter=entry_filter)
+        engine = Engine(broker, config, store, args.execute, observer=observer, entry_filter=entry_filter, commentary=commentary)
         log.warning("Trading account connected", extra={"event": "account_connected", "details": {
             "account_type": "DEMO" if account.is_demo else "REAL MONEY", "currency": account.currency,
             "equity": account.equity, "risk_percent": config.risk_fraction * 100,
@@ -105,6 +109,8 @@ def _run_connected(broker, config, args, log, mode: str, observer=None, entry_fi
             "strategy_mode": config.strategy_mode, "entry_minutes": engine.entry_minutes,
             "trend_minutes": engine.trend_minutes,
             "heartbeat_seconds": config.heartbeat_seconds,
+            "market_commentary_enabled": config.market_commentary_enabled,
+            "market_commentary_active": commentary is not None,
             "ollama_observation_enabled": config.ollama_observation_enabled,
             "ollama_observation_active": observer is not None,
             "ollama_execution_filter": config.ollama_filter_enabled,
@@ -135,6 +141,7 @@ def run(args) -> int:
         broker = MT5Broker(config)
         observer = None
         entry_filter = None
+        commentary = None
         try:
             if config.ollama_filter_enabled:
                 try:
@@ -168,11 +175,24 @@ def run(args) -> int:
                         "model": config.ollama_observation_model,
                     },
                 })
+            if config.market_commentary_enabled:
+                try:
+                    commentary = MarketCommentary(config, entry_filter=entry_filter)
+                except Exception:
+                    log.info("Market commentary unavailable; trading rules unchanged", extra={
+                        "event": "market_commentary_unavailable", "details": {"reason": "startup_failed"},
+                    })
+                log.info("Market commentary enabled; never execution approval", extra={
+                    "event": "market_commentary_started", "details": {
+                        "active": commentary is not None, "model": config.ollama_observation_model,
+                        "shared_filter_worker": entry_filter is not None,
+                    },
+                })
             log.info("Daily logging enabled", extra={"event": "logging_started", "details": {
                 "directory": str(Path(config.log_dir) / "bijisatu"), "rotation_timezone": "UTC",
-                "automatic_deletion": False, "file_level": "DEBUG",
+                "automatic_deletion": False, "file_level": "DEBUG" if args.verbose else "INFO",
             }})
-            return _run_connected(broker, config, args, log, mode, observer=observer, entry_filter=entry_filter)
+            return _run_connected(broker, config, args, log, mode, observer=observer, entry_filter=entry_filter, commentary=commentary)
         except KeyboardInterrupt:
             log.info("Stopped by user; existing broker positions are NOT closed and server SL/TP remain active",
                      extra={"event": "shutdown", "details": {"reason": "keyboard_interrupt"}})
@@ -183,6 +203,8 @@ def run(args) -> int:
             })
             raise
         finally:
+            if commentary is not None:
+                commentary.close()
             if entry_filter is not None:
                 entry_filter.close()
             if observer is not None:

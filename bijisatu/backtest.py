@@ -65,9 +65,9 @@ def _load_bars(path: Path) -> list[Bar]:
     return bars
 
 
-def _aggregate_closed(minutes: list[Bar], duration: int) -> Bar | None:
-    """Aggregate only boundary-aligned, complete contiguous minute groups."""
-    if len(minutes) < duration or (minutes[-1].time + 60) % (duration * 60):
+def _aggregate_closed(minutes: list[Bar], duration: int, offset_seconds: float = 0) -> Bar | None:
+    """Aggregate contiguous minutes aligned to fixed broker-local boundaries."""
+    if len(minutes) < duration or (minutes[-1].time + 60 + offset_seconds) % (duration * 60):
         return None
     group = minutes[-duration:]
     if any(bar.time != group[0].time + index * 60 for index, bar in enumerate(group)):
@@ -234,8 +234,8 @@ def run_backtest(
 
         minutes.append(bar)
         minutes = minutes[-trend_minutes:]
-        entry_bar = _aggregate_closed(minutes, entry_minutes)
-        trend_bar = _aggregate_closed(minutes, trend_minutes)
+        entry_bar = _aggregate_closed(minutes, entry_minutes, broker_utc_offset_hours * 3600)
+        trend_bar = _aggregate_closed(minutes, trend_minutes, broker_utc_offset_hours * 3600)
         if entry_bar is not None:
             entry_bars.append(entry_bar)
             entry_bars = entry_bars[-100:]
@@ -273,7 +273,7 @@ def run_backtest(
         assumptions=[
             "Educational offline single-symbol simulation; no profitability claims or live execution guarantee.",
             "CSV times are UTC bar opens; OHLC are positive bid prices. Ask = bid + constant spread.",
-            f"Only complete, boundary-aligned contiguous M1 groups form M{entry_minutes}/M{trend_minutes} bars. Evaluate latest 100 closed bars of each timeframe.",
+            f"Only complete, fixed broker-local boundary-aligned contiguous M1 groups form {strategy.timeframe_label(entry_minutes)}/{strategy.timeframe_label(trend_minutes)} bars. Evaluate latest 100 closed bars of each timeframe.",
             f"Signals enter at the next observed M1 open if still fresh; gaps never invent fills. One position; {cooldown_seconds}-second entry-to-entry cooldown. Entry/trend close-age limits are timeframe duration plus 30/90 seconds, as in live scans.",
             f"Entry requires spread/entry ATR <= {max_spread_atr}. SL distance = max({stop_atr}*ATR, spread+slippage); TP distance = {reward_ratio}*SL distance. No broker tick-grid/stops metadata is modeled.",
             "Adverse slippage applies at entry and every exit. Roundtrip commission is charged once on exit and reserved in floating equity and lot sizing.",

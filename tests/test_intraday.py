@@ -193,7 +193,7 @@ class IntradayRuntimeTests(unittest.TestCase):
             self.step()
         args, kwargs = evaluator.call_args
         self.assertEqual([len(bars) for bars in args], [100, 100])
-        self.assertEqual(kwargs, dict(entry_minutes=15, trend_minutes=60))
+        self.assertEqual(kwargs, dict(entry_minutes=15, trend_minutes=60, diagnostics={}))
 
 
 class IntradayBacktestTests(unittest.TestCase):

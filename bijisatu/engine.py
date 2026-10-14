@@ -9,7 +9,7 @@ from .config import Config
 from .models import OrderPlan
 from .risk import price_levels, size_volume
 from .state import StateError, StateStore
-from .strategy import evaluate, fresh_candle, timeframes
+from .strategy import assess, evaluate, fresh_candle, timeframe_label, timeframes
 
 LOG = logging.getLogger("bijisatu")
 
@@ -25,7 +25,7 @@ def trading_day(now: float, offset_hours: float) -> tuple[str, float]:
 
 class Engine:
     def __init__(self, broker, config: Config, store: StateStore, execute: bool = False, observer=None,
-                 entry_filter=None):
+                 entry_filter=None, commentary=None):
         config.validate(execute)
         self.broker = broker
         self.config = config
@@ -34,6 +34,8 @@ class Engine:
         self.execute = execute
         self.observer = observer
         self.entry_filter = entry_filter
+        self.commentary = commentary
+        self._assessment_latest = {}
         self.symbols = broker.symbols()
         if not self.symbols:
             raise BrokerError("No eligible symbols; configure exact broker symbol names")
@@ -65,7 +67,7 @@ class Engine:
             if not math.isfinite(position.sl) or position.sl <= 0 or not math.isfinite(position.volume) or position.volume <= 0:
                 raise BrokerError("Position has no valid server-side stop; new entries disabled")
             quote = self.broker.tick(position.symbol)
-            self._fresh_tick(quote, now + time.monotonic() - started)
+            self._fresh_tick(quote, now + (time.monotonic() - started))
             mark = quote.bid if position.side == "buy" else quote.ask
             loss = max(0.0, -self.broker.profit(position.side, position.symbol, position.volume, mark, position.sl))
             commission = (self.config.commission_per_lot or 0) * position.volume
@@ -104,19 +106,89 @@ class Engine:
             "symbol": symbol, "reason": reason, **details,
         }})
 
+    def _assessment_log(self, symbol, bar_time, diagnostics):
+        if not diagnostics or bar_time <= self._assessment_latest.get(symbol, -1):
+            return
+        self._assessment_latest[symbol] = bar_time
+        reasons = diagnostics.get("rejected_reasons", [])
+        trend = diagnostics.get("trend_candles", [])
+        entry = diagnostics.get("entry", {})
+        failures = {}
+        for side, checks in diagnostics.get("conditions", {}).items():
+            failures[side] = [name for name, passed in checks.items() if not passed and name != "trend"]
+        LOG.info("Closed-candle setup " + ("rejected" if reasons else "valid"), extra={
+            "event": "setup_assessment", "details": {
+                "symbol": symbol, "bar_time": bar_time,
+                "entry_timeframe": diagnostics.get("entry_timeframe"),
+                "trend_timeframe": diagnostics.get("trend_timeframe"),
+                "reason": ", ".join(reasons) or "strategy conditions met; separate filter/risk checks required",
+                "failed_conditions": failures,
+                "trend_latest": trend[-1] if trend else None,
+                "entry_latest": entry or None,
+            },
+        })
+
+    def _prepare_commentary(self, now):
+        if not self.config.market_commentary_enabled or self.commentary is None:
+            return
+        for symbol in self.symbols:
+            try:
+                entry = self.broker.bars(symbol, self.entry_minutes)
+                trend = self.broker.bars(symbol, self.trend_minutes)
+                self._market_bars[symbol] = (entry, trend)
+                if not entry or not fresh_candle(entry[-1], self.entry_minutes, now, 30):
+                    continue
+                cutoff = entry[-1].time + self.entry_minutes * 60
+                closed = [bar for bar in trend if bar.time + self.trend_minutes * 60 <= cutoff]
+                if not closed or not fresh_candle(closed[-1], self.trend_minutes, now, 90):
+                    continue
+                assessment = assess(entry[-100:], closed[-100:], entry_minutes=self.entry_minutes,
+                                    trend_minutes=self.trend_minutes)
+                self._assessment_log(symbol, entry[-1].time, assessment.diagnostics)
+                if "conditions" in assessment.diagnostics:
+                    self._pending_commentary.append((symbol, self.entry_minutes, self.trend_minutes,
+                                                    entry, trend, now))
+            except (BrokerError, ValueError):
+                LOG.debug("Commentary market data unavailable", extra={"event": "market_commentary_data_rejected",
+                          "details": {"symbol": symbol, "commentary_only": True}})
+
     def step(self, now: float) -> dict:
         self._snapshot = {}
         self._skip_counts = {}
+        self._market_bars = {}
+        self._pending_commentary = []
         try:
             result = self._step(now)
         except TickTimeError as exc:
-            LOG.warning("Entry paused until quote timestamps are valid", extra={
-                "event": "quote_time_blocked", "details": {
-                    "reason": str(exc), "retry_seconds": self.config.poll_seconds,
-                },
-            })
+            kind = str(exc).split(":", 1)[0]
+            previous_kind, logged_at = getattr(self, "_quote_warning", (None, float("-inf")))
+            if kind != previous_kind or now - logged_at >= self.config.heartbeat_seconds:
+                LOG.warning("Entry paused until quote timestamps are valid", extra={
+                    "event": "quote_time_blocked", "details": {
+                        "reason": str(exc), "retry_seconds": self.config.poll_seconds,
+                    },
+                })
+                self._quote_warning = (kind, now)
             result = {"status": "blocked", "reason": str(exc),
                       "retry_seconds": self.config.poll_seconds}
+        # Submit only after strategy/filter scheduling: approvals take queue priority.
+        for args in self._pending_commentary:
+            try:
+                self.commentary.submit(*args)
+            except Exception:
+                LOG.debug("Market commentary snapshot rejected; trading rules unchanged", extra={
+                    "event": "market_commentary_data_rejected", "details": {"symbol": args[0]},
+                })
+        if result["status"] in ("sent", "dry_run"):
+            LOG.info("Order sent" if result["status"] == "sent" else "Dry-run entry claimed",
+                     extra={"event": "order_sent" if result["status"] == "sent" else "entry_claimed",
+                            "details": result.copy()})
+        halt_reason = result.get("reason") if result["status"] == "halted" else None
+        if halt_reason is not None and halt_reason != getattr(self, "_last_halt_reason", None):
+            LOG.warning("New entries halted", extra={"event": "risk_halted", "details": {"reason": halt_reason}})
+        self._last_halt_reason = halt_reason
+        if result["status"] != "blocked" or not result.get("reason", "").startswith(("Stale tick:", "Future tick:")):
+            self._quote_warning = (None, float("-inf"))
         result["account"] = self._snapshot
         result["skipped"] = self._skip_counts
         LOG.debug("Scan completed", extra={"event": "scan_completed", "details": result})
@@ -148,15 +220,16 @@ class Engine:
             return {"status": "halted", "reason": state["reason"], "loss": loss, "limit": limit}
         if self.broker.has_orders():
             return {"status": "blocked", "reason": "Pending orders exist"}
-        now = cycle_time + time.monotonic() - started
+        now = cycle_time + (time.monotonic() - started)
         reserved = self._open_risk(positions, now)
+        self._prepare_commentary(cycle_time + (time.monotonic() - started))
         budget = self._entry_budget(account.equity, limit, loss, reserved)
         if budget <= 0 or len(positions) >= self.config.max_positions:
             return {"status": "blocked", "reason": "Open-position or remaining daily/open-risk limit", "remaining": budget}
         held_symbols = {p.symbol for p in positions}
         candidates = []
         for symbol in self.symbols:
-            now = cycle_time + time.monotonic() - started
+            now = cycle_time + (time.monotonic() - started)
             if symbol in held_symbols:
                 self._skip(symbol, "position_already_open")
                 continue
@@ -168,7 +241,7 @@ class Engine:
             try:
                 spec = self.broker.spec(symbol)
                 quote = self.broker.tick(symbol)
-                now = cycle_time + time.monotonic() - started
+                now = cycle_time + (time.monotonic() - started)
                 context = {"bid": quote.bid, "ask": quote.ask,
                            "tick_age_seconds": round(now - quote.time, 3),
                            "max_tick_age_seconds": self.config.max_tick_age_seconds,
@@ -176,9 +249,12 @@ class Engine:
                            "spread_points": round((quote.ask - quote.bid) / spec.point, 3)}
                 self._fresh_tick(quote, now)
                 context["tick_time_utc"] = datetime.fromtimestamp(quote.time, timezone.utc).isoformat()
-                entry_bars = self.broker.bars(symbol, self.entry_minutes)
-                trend_bars = self.broker.bars(symbol, self.trend_minutes)
-                now = cycle_time + time.monotonic() - started
+                if symbol in self._market_bars:
+                    entry_bars, trend_bars = self._market_bars[symbol]
+                else:
+                    entry_bars = self.broker.bars(symbol, self.entry_minutes)
+                    trend_bars = self.broker.bars(symbol, self.trend_minutes)
+                now = cycle_time + (time.monotonic() - started)
                 context.update(strategy_mode=self.config.strategy_mode,
                                entry_minutes=self.entry_minutes, trend_minutes=self.trend_minutes)
                 for minutes, bars in ((self.entry_minutes, entry_bars), (self.trend_minutes, trend_bars)):
@@ -199,11 +275,20 @@ class Engine:
                 if not closed_trend or not fresh_candle(closed_trend[-1], self.trend_minutes, now, 90):
                     self._skip(symbol, "stale_or_future_candles", **context)
                     continue
+                diagnostics = {}
                 if self.config.strategy_mode == "scalping":
-                    signal = evaluate(entry_bars, trend_bars)
+                    signal = evaluate(entry_bars, trend_bars, diagnostics=diagnostics)
                 else:
                     signal = evaluate(entry_bars[-100:], closed_trend[-100:], entry_minutes=self.entry_minutes,
-                                      trend_minutes=self.trend_minutes)
+                                      trend_minutes=self.trend_minutes, diagnostics=diagnostics)
+                self._assessment_log(symbol, entry_bars[-1].time, diagnostics)
+                context["assessment"] = diagnostics
+                context.update(entry_timeframe=timeframe_label(self.entry_minutes),
+                               trend_timeframe=timeframe_label(self.trend_minutes),
+                               future_trend_bars_excluded=len(trend_bars) - len(closed_trend))
+                LOG.debug("Closed-candle strategy assessment", extra={"event": "strategy_assessment", "details": {
+                    "symbol": symbol, **context,
+                }})
                 if signal is None:
                     reason = "insufficient_history" if len(entry_bars) < 100 or len(closed_trend) < 100 else "no_trend_pullback_setup"
                     self._skip(symbol, reason, required_bars_per_timeframe=100, **context)
@@ -261,7 +346,7 @@ class Engine:
                 self._skip(symbol, reason, error=str(exc), **context)
         candidates.sort(key=lambda candidate: candidate[0])
         for _, symbol, signal, spec, trend_bar, binding in candidates:
-            now = cycle_time + time.monotonic() - started
+            now = cycle_time + (time.monotonic() - started)
             if trading_day(now, self.config.broker_utc_offset_hours or 0)[0] != state["day"]:
                 return {"status": "waiting", "reason": "Day changed during scan; rebaseline next cycle"}
             if (not 0 <= now - (signal.bar_time + self.entry_minutes * 60) <= self.entry_minutes * 60 + 30
@@ -278,7 +363,7 @@ class Engine:
                 if loss >= limit:
                     self.store.halt("Daily equity loss limit reached during scan")
                     return {"status": "halted", "reason": state["reason"]}
-                now = cycle_time + time.monotonic() - started
+                now = cycle_time + (time.monotonic() - started)
                 reserved = self._open_risk(positions, now)
                 budget = self._entry_budget(account.equity, limit, loss, reserved)
                 self._snapshot.update(equity=account.equity, balance=account.balance,
@@ -286,7 +371,7 @@ class Engine:
                 if budget <= 0:
                     return {"status": "blocked", "reason": "Daily/open-risk budget exhausted during scan", "remaining": budget}
                 quote = self.broker.tick(symbol)
-                now = cycle_time + time.monotonic() - started
+                now = cycle_time + (time.monotonic() - started)
                 self._fresh_tick(quote, now)
                 if (quote.ask - quote.bid) / signal.atr > self.config.max_spread_atr:
                     self._skip(symbol, "spread_widened_before_entry", spread_atr=(quote.ask - quote.bid) / signal.atr)
@@ -309,7 +394,7 @@ class Engine:
                                loss_per_lot=loss_per_lot, volume_min=spec.volume_min, currency=account.currency)
                     continue
                 plan = OrderPlan(symbol, signal.side, volume, entry, sl, tp, volume * loss_per_lot, signal.bar_time)
-                now = cycle_time + time.monotonic() - started
+                now = cycle_time + (time.monotonic() - started)
                 if (not 0 <= now - (signal.bar_time + self.entry_minutes * 60) <= self.entry_minutes * 60 + 30
                         or not fresh_candle(trend_bar, self.trend_minutes, now, 90)):
                     self._skip(symbol, "signal_expired_during_scan", bar_time=signal.bar_time)
@@ -328,7 +413,7 @@ class Engine:
                         continue
                 def claim_filtered_entry():
                     # Broker preflight has passed; refresh safety immediately before the durable claim.
-                    current_time = cycle_time + time.monotonic() - started
+                    current_time = cycle_time + (time.monotonic() - started)
                     live_account = self.broker.account()
                     live_positions = self.broker.positions()
                     if (not live_account.trade_allowed or self.broker.has_orders()
@@ -350,7 +435,7 @@ class Engine:
                     if plan.risk_amount > min(live_budget, live_account.equity * self.config.risk_fraction):
                         raise BrokerError("Risk budget changed before filtered entry")
                     live_quote = self.broker.tick(symbol)
-                    current_time = cycle_time + time.monotonic() - started
+                    current_time = cycle_time + (time.monotonic() - started)
                     self._fresh_tick(live_quote, current_time)
                     live_entry = live_quote.ask if signal.side == "buy" else live_quote.bid
                     if (abs(live_entry - plan.entry) > deviation
@@ -362,10 +447,16 @@ class Engine:
                             or self.entry_filter.lookup(binding) != "allowed"):
                         raise BrokerError("Filter approval, trading day or signal expired before entry")
                     self.store.claim(symbol, signal.bar_time, current_time)
+                    LOG.info("Filtered entry claimed", extra={"event": "entry_claimed", "details": {
+                        "symbol": symbol, "bar_time": signal.bar_time, "side": signal.side,
+                    }})
 
                 # Claim only after approval; filter execution defers it until broker preflight passes.
                 if not self.execute or not self.config.ollama_filter_enabled:
                     self.store.claim(symbol, signal.bar_time, now)
+                    LOG.info("Entry claimed", extra={"event": "entry_claimed", "details": {
+                        "symbol": symbol, "bar_time": signal.bar_time, "side": signal.side,
+                    }})
                 if not self.execute:
                     return {"status": "dry_run", "plan": asdict(plan), "currency": account.currency,
                             "note": "No order sent; observation only, not simulated profit"}

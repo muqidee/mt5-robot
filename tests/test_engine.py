@@ -366,7 +366,7 @@ class EngineTests(unittest.TestCase):
     def test_quote_that_ages_during_scan_is_not_sent(self):
         elapsed = [0.0]
         signal = self.evaluate.return_value
-        def evaluate(m1, m5):
+        def evaluate(m1, m5, **kwargs):
             elapsed[0] = self.config.max_tick_age_seconds + 1
             return signal
         self.evaluate.side_effect = evaluate
@@ -381,7 +381,7 @@ class EngineTests(unittest.TestCase):
         self.now = int(midnight + 86400 - 1)
         signal = Signal("buy", self.now - 60, 0.002, "controlled")
         elapsed = [0.0]
-        def evaluate(m1, m5):
+        def evaluate(m1, m5, **kwargs):
             elapsed[0] = 2.0
             return signal
         self.evaluate.side_effect = evaluate
